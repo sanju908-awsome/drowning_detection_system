@@ -1,8 +1,10 @@
+import base64
 import json
 import hmac
 import mimetypes
 import uuid
 import threading
+import time
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -12,6 +14,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from .cctv import CameraStream
 from .processor import process_video
@@ -31,6 +34,17 @@ cctv_lock = threading.Lock()
 cctv_stream: CameraStream | None = None
 cctv_incident_lock = threading.Lock()
 cctv_incidents: list[dict] = []
+webcam_lock = threading.Lock()
+webcam_session: dict | None = None
+webcam_incidents: list[dict] = []
+
+
+def record_webcam_incident(event: dict):
+    incident = {**event, "id": int(datetime.now(timezone.utc).timestamp() * 1_000_000),
+                "job_id": "PC-WEBCAM-LIVE", "created_at": datetime.now(timezone.utc).isoformat()}
+    with webcam_lock:
+        webcam_incidents.append(incident)
+        del webcam_incidents[:-100]
 
 
 def record_cctv_incident(event: dict):
@@ -134,6 +148,74 @@ def verify_access_code(request: AccessCodeRequest):
 class CameraConnection(BaseModel):
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=256)
+
+
+class WebcamSessionRequest(BaseModel):
+    session_id: str = Field(min_length=16, max_length=64)
+
+
+@app.post("/api/webcam/start")
+def start_webcam_analysis():
+    global webcam_session
+    try:
+        from .live_analysis import LiveRiskAnalyzer
+        analyzer = LiveRiskAnalyzer(settings)
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "Webcam detection is unavailable because the configured YOLO model file is missing.") from exc
+    except Exception as exc:
+        raise HTTPException(503, f"Webcam detector could not start ({type(exc).__name__}). Check backend model and dependencies.") from exc
+    session = {"id": uuid.uuid4().hex, "analyzer": analyzer, "started_at": time.monotonic(), "lock": threading.Lock()}
+    with webcam_lock:
+        webcam_session = session
+    return {"session_id": session["id"], "detector_ready": True,
+            "temporal_model_ready": analyzer.risk.ready,
+            "risk_message": "Experimental temporal risk classifier; not validated for real-world safety."}
+
+
+@app.post("/api/webcam/stop")
+def stop_webcam_analysis(request: WebcamSessionRequest):
+    global webcam_session
+    with webcam_lock:
+        if webcam_session and webcam_session["id"] == request.session_id:
+            webcam_session = None
+    return {"status": "stopped"}
+
+
+def analyze_webcam_frame(session: dict, frame_bytes: bytes):
+    import cv2
+    with session["lock"]:
+        with webcam_lock:
+            if webcam_session is not session:
+                raise HTTPException(409, "Webcam analysis session ended. Start it again.")
+        import numpy as np
+        image = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise HTTPException(400, "Could not decode the webcam frame.")
+        annotated, events = session["analyzer"].process(image, time.monotonic() - session["started_at"])
+        ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 76])
+        if not ok:
+            raise HTTPException(500, "Could not encode the analyzed webcam frame.")
+        for event in events:
+            record_webcam_incident(event)
+        return {"frame_jpeg_base64": base64.b64encode(encoded.tobytes()).decode("ascii"),
+                "risk_state": session["analyzer"].latest_state,
+                "track_count": session["analyzer"].track_count,
+                "events": events,
+                "temporal_model_ready": session["analyzer"].risk.ready}
+
+
+@app.post("/api/webcam/frame")
+async def analyze_pc_webcam_frame(request: Request, session_id: str):
+    with webcam_lock:
+        session = webcam_session
+    if not session or session["id"] != session_id:
+        raise HTTPException(409, "Webcam analysis session is not active. Start the webcam analysis first.")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() not in {"image/jpeg", "application/octet-stream"}:
+        raise HTTPException(415, "Send a JPEG webcam frame.")
+    frame_bytes = await request.body()
+    if not frame_bytes or len(frame_bytes) > 3 * 1024 * 1024:
+        raise HTTPException(413, "Webcam frame is empty or exceeds the 3 MB limit.")
+    return await run_in_threadpool(analyze_webcam_frame, session, frame_bytes)
 
 
 def cctv_status():
@@ -274,4 +356,6 @@ def preview(job_id: str):
 def incidents():
     with cctv_incident_lock:
         live = list(cctv_incidents)
-    return sorted([*store.list_incidents(), *live], key=lambda event: event["created_at"], reverse=True)[:100]
+    with webcam_lock:
+        webcam_live = list(webcam_incidents)
+    return sorted([*store.list_incidents(), *live, *webcam_live], key=lambda event: event["created_at"], reverse=True)[:100]
