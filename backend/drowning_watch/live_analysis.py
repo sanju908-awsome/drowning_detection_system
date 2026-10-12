@@ -1,5 +1,5 @@
 """Per-frame detector, tracker, and experimental temporal risk analysis."""
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,8 @@ class LiveRiskAnalyzer:
         self.settings = settings
         self.alerted_detector_tracks: set[int] = set()
         self.alerted_risk_tracks: set[int] = set()
+        self.detector_warning_hits: dict[int, deque[int]] = defaultdict(
+            lambda: deque(maxlen=settings.drowning_alert_window_frames))
         self.last_seen: dict[int, float] = {}
         self.track_count = 0
         self.latest_state = "UNASSESSED"
@@ -76,6 +78,7 @@ class LiveRiskAnalyzer:
                 )
                 self.alerted_detector_tracks.discard(track_id)
                 self.alerted_risk_tracks.discard(track_id)
+                self.detector_warning_hits.pop(track_id, None)
             self.last_seen[track_id] = timestamp_seconds
             scale_x = REFERENCE_FRAME_SIZE / max(1, width)
             scale_y = REFERENCE_FRAME_SIZE / max(1, height)
@@ -85,10 +88,19 @@ class LiveRiskAnalyzer:
             features = history.as_features()
             prediction = self.risk.predict(features)
             state = self.logic[track_id].update(prediction, int(features["observations"]))
-            detector_drowning = class_name.strip().casefold() == "drowning"
+            drowning_candidate = class_name.strip().casefold() == "drowning"
+            confidence_value = float(confidence) if confidence is not None else 0.0
+            warning_hits = self.detector_warning_hits[track_id]
+            warning_hits.append(int(drowning_candidate and confidence_value >= self.settings.drowning_alert_confidence))
+            detector_drowning = sum(warning_hits) >= self.settings.drowning_alert_confirmation_frames
             states.append("WARNING" if detector_drowning else state["state"])
-            color = (0, 0, 255) if detector_drowning or state["state"] == "EMERGENCY" else (0, 175, 255) if state["state"] == "WARNING" else (0, 210, 0)
-            label = f"DROWNING DETECTOR WARNING | ID {track_id}" if detector_drowning else f"{class_name} | ID {track_id} | {state['state']}"
+            color = (0, 0, 255) if detector_drowning or state["state"] == "EMERGENCY" else (0, 150, 255) if drowning_candidate or state["state"] == "WARNING" else (0, 210, 0)
+            if detector_drowning:
+                label = f"DROWNING WARNING | ID {track_id} | {confidence_value:.2f}"
+            elif drowning_candidate:
+                label = f"DROWNING CANDIDATE | ID {track_id} | {confidence_value:.2f}"
+            else:
+                label = f"{class_name} | ID {track_id} | {state['state']}"
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(frame, label, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX,
                         0.55, color, 2, cv2.LINE_AA)
@@ -96,7 +108,7 @@ class LiveRiskAnalyzer:
             if detector_drowning and track_id not in self.alerted_detector_tracks:
                 self.alerted_detector_tracks.add(track_id)
                 event = {"track_id": track_id, "state": "WARNING",
-                         "score": float(confidence) if confidence is not None else None,
+                         "score": confidence_value,
                          "timestamp_seconds": timestamp_seconds, "class_name": "Drowning detector"}
             elif state["state"] == "EMERGENCY" and track_id not in self.alerted_risk_tracks:
                 self.alerted_risk_tracks.add(track_id)

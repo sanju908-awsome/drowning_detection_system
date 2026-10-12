@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     risk_warning_confirmation_frames: int = 5
     risk_emergency_confirmation_frames: int = 3
     risk_clear_confirmation_frames: int = 15
+    drowning_alert_confidence: float = 0.65
+    drowning_alert_confirmation_frames: int = 3
+    drowning_alert_window_frames: int = 5
     cctv_rtsp_url: str = ""
     frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     api_access_code: str = ""
