@@ -2,7 +2,7 @@
 
 PoolWatch is a local research prototype for analyzing swimming-pool videos with YOLO detection, mandatory DeepSORT tracking, optional MediaPipe pose observations, per-track motion features, and a Random Forest risk classifier **only when a properly labeled and schema-matched model is supplied**.
 
-> This is a safety-support prototype. It is not validated for rescue decisions and does not replace trained lifeguards, emergency procedures, or continuous human supervision. Without temporal labels and an evaluated risk model, the application reports **UNASSESSED**.
+> This is a safety-support prototype. It is not validated for rescue decisions and does not replace trained lifeguards, emergency procedures, or continuous human supervision. An experimental binary temporal classifier is installed in the current workspace; it predicts SAFE/EMERGENCY only and is not safety-validated.
 
 ## Current implementation
 
@@ -10,7 +10,7 @@ PoolWatch is a local research prototype for analyzing swimming-pool videos with 
 * OpenCV decodes/annotates video, Ultralytics YOLO performs frame detections, and DeepSORT maintains track IDs. The selected job shows a refreshed tracking preview while processing.
 * The supplied detector's `Drowning` class creates a provisional WARNING incident; it is a detector result, not a validated temporal risk score. Browser tones must be armed in the dashboard.
 * MediaPipe Pose draws visible body landmarks when its local task asset is present; the local setup enables pose by default.
-* A versioned motion feature extractor keeps per-track histories. Missing/untrained risk classifier means UNASSESSED.
+* A versioned motion feature extractor keeps per-track histories. The installed experimental classifier predicts binary SAFE/EMERGENCY from temporal motion windows. It is not validated for rescue decisions.
 * SQLite stores job/incident history. React + TypeScript + Vite presents uploads, progress, processed video and event history.
 * Reproducible dataset audit, dataset YAML preparation, YOLO training/test evaluation, and group-separated RF training tools are included.
 
@@ -76,7 +76,7 @@ Open `http://localhost:5173`. Upload a pool video and follow the job. The backen
 
 ## Temporal risk model
 
-Do not train from the image-level `Drowning`/`Swimming` detection labels. Risk needs independently reviewed temporal windows. See [risk-model schema and workflow](docs/risk_model.md). Input CSV requires `video_id`, `risk_label` (SAFE/WARNING/EMERGENCY), and every motion-v1 feature column.
+The local prototype was trained from public temporal CVAT box annotations. To reproduce it, see [risk-model schema and workflow](docs/risk_model.md). The generated checkpoint is not tracked because the upstream annotation repository does not specify a dataset license. For project-specific three-class training, use independently reviewed temporal windows; the CSV requires `video_id`, `risk_label` (SAFE/WARNING/EMERGENCY), and every motion-v2 feature column.
 
 ```powershell
 $env:PYTHONPATH = "backend"

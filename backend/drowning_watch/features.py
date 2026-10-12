@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from math import hypot
 from typing import Any
 
-FEATURE_SCHEMA_VERSION = "motion-v1"
+FEATURE_SCHEMA_VERSION = "motion-v2"
+REFERENCE_FRAME_SIZE = 224
 FEATURE_NAMES = (
     "observations",
     "track_duration_seconds",

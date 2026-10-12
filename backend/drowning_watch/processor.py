@@ -5,7 +5,7 @@ from typing import Callable
 
 import cv2
 
-from .features import TrackHistory
+from .features import REFERENCE_FRAME_SIZE, TrackHistory
 from .risk import RiskClassifier
 from .risk_logic import RiskStateLogic
 from .settings import Settings
@@ -137,7 +137,11 @@ def process_video(source: Path, destination: Path, settings: Settings,
                                     cv2.line(frame, points[start], points[end], (70, 230, 245), 2)
                     except Exception:
                         visibility = None
-                history.add(now, (x1, y1, x2, y2), confidence if confidence is not None else 0.0, visibility)
+                # Normalize pixel motion to the 224px canvas used by training clips.
+                scale_x = REFERENCE_FRAME_SIZE / max(1, width)
+                scale_y = REFERENCE_FRAME_SIZE / max(1, height)
+                normalized_box = (x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y)
+                history.add(now, normalized_box, confidence if confidence is not None else 0.0, visibility)
                 features = history.as_features()
                 raw_prediction = risk.predict(features)
                 risk_state = risk_logic[track_id].update(raw_prediction, int(features["observations"]))

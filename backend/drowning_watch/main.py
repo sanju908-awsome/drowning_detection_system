@@ -26,6 +26,16 @@ preview_lock = threading.Lock()
 latest_previews: dict[str, bytes] = {}
 cctv_lock = threading.Lock()
 cctv_stream: CameraStream | None = None
+cctv_incident_lock = threading.Lock()
+cctv_incidents: list[dict] = []
+
+
+def record_cctv_incident(event: dict):
+    incident = {**event, "id": int(datetime.now(timezone.utc).timestamp() * 1_000_000),
+                "job_id": "CCTV-LIVE", "created_at": datetime.now(timezone.utc).isoformat()}
+    with cctv_incident_lock:
+        cctv_incidents.append(incident)
+        del cctv_incidents[:-100]
 @asynccontextmanager
 async def lifespan(_app):
     global cctv_stream
@@ -114,7 +124,8 @@ def connect_cctv(connection: CameraConnection):
     if not settings.cctv_rtsp_url.strip():
         raise HTTPException(503, "Camera address is not configured. Add the camera RTSP URL to the project .env as CCTV_RTSP_URL, then restart the backend.")
     try:
-        stream = CameraStream(settings.cctv_rtsp_url, connection.username, connection.password)
+        stream = CameraStream(settings.cctv_rtsp_url, connection.username, connection.password,
+                              settings=settings, on_event=record_cctv_incident)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     with cctv_lock:
@@ -234,4 +245,6 @@ def preview(job_id: str):
 
 @app.get("/api/incidents")
 def incidents():
-    return store.list_incidents()
+    with cctv_incident_lock:
+        live = list(cctv_incidents)
+    return sorted([*store.list_incidents(), *live], key=lambda event: event["created_at"], reverse=True)[:100]

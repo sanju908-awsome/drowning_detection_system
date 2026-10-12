@@ -5,7 +5,7 @@
 * **DeepSORT import error** — activate the project virtual environment and run `pip install -r requirements.txt`.
 * **Video output cannot open** — new results use VP8/WebM to avoid depending on a local H.264 encoder. Ensure the browser supports WebM and `data/outputs` is writable. Previously generated MP4V results may not play in every browser; their tracked-frame preview and metrics remain available.
 * **Upload rejected** — supported extensions: MP4, MOV, AVI, MKV, WEBM. The default maximum is 500 MB.
-* **Risk shows UNASSESSED** — expected until you have independently labeled temporal track windows, train a schema-matched model, and configure `RISK_MODEL`.
+* **Risk shows UNASSESSED** — the model waits for at least `RISK_MIN_OBSERVATIONS` tracked frames and sufficient model probability. This experimental model predicts only SAFE/EMERGENCY; its probability and alert thresholds are not calibrated.
 * **Pose says MODEL MISSING** — download a compatible MediaPipe Pose Landmarker `.task` model from the official task documentation, set `POSE_MODEL` and `POSE_ENABLED=true`, and restart the backend.
 * **Dashboard says service offline** — start FastAPI at port 8000 and Vite at port 5173; set `FRONTEND_ORIGINS` if using another development address.
 * **Test data reports leakage** — expected for this export. Do not quote its test metrics as independent; the audit identified duplicate image content across splits.

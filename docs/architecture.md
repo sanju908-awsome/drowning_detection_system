@@ -2,9 +2,9 @@
 
 ## Implemented local flow
 
-`video upload → FastAPI job queue → OpenCV frame reader → Ultralytics YOLO detector → DeepSORT adapter → optional MediaPipe pose → per-track motion-v1 features → optional Random Forest → annotated WebM + SQLite job/incident rows`
+`uploaded video or RTSP stream → OpenCV frames → Ultralytics YOLO detector → DeepSORT tracker → per-track motion-v2 features → experimental Random Forest → annotated video/live CCTV frame + alert events`
 
-The React/Vite dashboard uploads video, polls jobs, previews completed output, and lists persisted jobs and model-generated warning/emergency incidents. Inference runs in a single in-process worker thread. The flow and UI explicitly show **UNASSESSED** if the temporal classifier is missing or incompatible.
+The React/Vite dashboard uploads video, previews completed output, displays the analyzed RTSP camera stream, and polls for alert events. CCTV analysis runs in the camera stream worker; uploaded-video analysis runs in the video worker. A missing or incompatible classifier yields **UNASSESSED**.
 
 ## Current limits
 
@@ -12,4 +12,4 @@ This is a local research prototype, not a production deployment. CCTV stream int
 
 ## Safety boundary
 
-Frame-level classes and motion features do not establish a drowning event. No RF model or temporal labels are provided, so all analyzed tracks report UNASSESSED by default. The interface and overlay state that the system does not replace trained lifeguards or emergency response.
+The installed experimental RF model classifies per-track motion windows as SAFE or EMERGENCY in uploaded-video and RTSP CCTV analysis. Its training labels came from public CVAT box annotations, not detector output; evaluation is source-video-grouped but shows low EMERGENCY precision. It does not predict WARNING. The interface and overlay state that the system does not replace trained lifeguards or emergency response.
