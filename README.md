@@ -27,7 +27,11 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements-dev.txt
 Copy-Item .env.example .env
+New-Item -ItemType Directory -Force models | Out-Null
+Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" -OutFile ".\models\pose_landmarker.task"
 ```
+
+The pose task asset and detector weights are local files and are excluded from Git. The dashboard enables pose when the task asset is present.
 
 If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in that terminal and activate again. PyTorch/OpenCV installation varies by hardware; see [troubleshooting](docs/troubleshooting.md).
 
