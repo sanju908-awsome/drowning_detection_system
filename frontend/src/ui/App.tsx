@@ -74,7 +74,7 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
   const [error, setError] = useState('')
   const [incidentsLoaded, setIncidentsLoaded] = useState(false)
   const [soundEnabled, setSoundEnabled] = useState(true)
-  const [screen, setScreen] = useState<'analysis' | 'cctv'>('analysis')
+  const [screen, setScreen] = useState<'analysis' | 'cctv' | 'webcam'>('analysis')
   const knownIncidents = useRef<Set<number> | null>(null)
   const alertedIncidentIds = useRef<Set<number>>(new Set())
   const alertableJobs = useRef<Set<string>>(new Set())
@@ -200,8 +200,8 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
   }
 
   return <main className="shell" onPointerDownCapture={unlockSound} onKeyDownCapture={unlockSound}>
-    <header className="top"><div className="brand"><span className="mark">◉</span><div><strong>POOLWATCH</strong><small>VIDEO SAFETY RESEARCH PROTOTYPE</small></div></div><nav className="screen-nav" aria-label="Application screens"><button className={screen === 'analysis' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('analysis')}>VIDEO ANALYSIS</button><button className={screen === 'cctv' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('cctv')}>CCTV LIVE</button></nav><div className="header-alert"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><button className="sound-test" onClick={() => void playBuzzer()}>TEST SOUND</button><button className="text-button" onClick={onLogout}>LOCK</button></div><div className="connection"><i className={health?.status === 'ok' ? 'dot online' : 'dot'} />{health?.status === 'ok' ? 'SERVICE CONNECTED' : 'SERVICE OFFLINE'}</div></header>
-    {screen === 'cctv' ? <CctvPanel /> : <>
+    <header className="top"><div className="brand"><span className="mark">◉</span><div><strong>POOLWATCH</strong><small>VIDEO SAFETY RESEARCH PROTOTYPE</small></div></div><nav className="screen-nav" aria-label="Application screens"><button className={screen === 'analysis' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('analysis')}>VIDEO ANALYSIS</button><button className={screen === 'cctv' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('cctv')}>CCTV LIVE</button><button className={screen === 'webcam' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('webcam')}>PC WEBCAM</button></nav><div className="header-alert"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><button className="sound-test" onClick={() => void playBuzzer()}>TEST SOUND</button><button className="text-button" onClick={onLogout}>LOCK</button></div><div className="connection"><i className={health?.status === 'ok' ? 'dot online' : 'dot'} />{health?.status === 'ok' ? 'SERVICE CONNECTED' : 'SERVICE OFFLINE'}</div></header>
+    {screen === 'cctv' ? <CctvPanel /> : screen === 'webcam' ? <WebcamPanel /> : <>
     {!selected && <section className="hero"><div><p className="eyebrow">MONITORING CONSOLE / LOCAL ANALYSIS</p><h1>Every second<br/><em>matters.</em></h1><p className="lead">Analyze pool footage with object detection and persistent person tracking.</p><label className={`upload ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={upload}/><span>{busy ? 'UPLOADING…' : '＋  ANALYZE A VIDEO'}</span></label><span className="meta">MP4, MOV, AVI, MKV, WEBM · max 500 MB</span></div><div className="status-card"><div className="card-head"><span>SYSTEM STATUS</span><span className="pulse"/></div><div className="risk"><span className="risk-icon">!</span><div><strong>RISK UNASSESSED</strong><small>{health?.risk_model_available ? 'Experimental SAFE/EMERGENCY temporal model installed' : 'No temporal model is installed'}</small></div></div><div className="status-line"><span>Person tracker</span><b>DeepSORT</b></div><div className="status-line"><span>Live CCTV</span><b className={health?.cctv_enabled ? '' : 'muted'}>{health?.cctv_enabled ? 'CONNECTED' : 'NOT CONNECTED'}</b></div><div className="status-line"><span>Pose estimation</span><b className="muted">{health?.pose_enabled ? 'ENABLED' : health?.pose_requested ? 'MODEL MISSING' : 'DISABLED'}</b></div><p className="note">Experimental motion alerts are not safety-validated and do not replace human supervision.</p></div></section>}
     {error && <div className="error" role="alert">{error}<button onClick={() => void refresh()}>Retry</button></div>}
     {selected ? <Monitor job={selected} incidents={incidents.filter(i => i.job_id === selected.id)} health={health} busy={busy} onUpload={upload} onViewAll={() => setSelected(null)} soundEnabled={soundEnabled} onToggleSound={toggleSound} onTestBuzzer={() => void playBuzzer()}/> : <section className="grid"><div className="panel"><div className="panel-title"><div><p className="eyebrow">ANALYSIS</p><h2>Videos & results</h2></div></div>
@@ -210,6 +210,71 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
     </>}
     <footer><span>POOLWATCH <i/> RESEARCH BUILD 0.1</span><p>Safety-support prototype. Never replaces lifeguards, emergency response, or continuous supervision.</p></footer>
   </main>
+}
+
+function WebcamPanel() {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const mountedRef = useRef(true)
+  const [active, setActive] = useState(false)
+  const [message, setMessage] = useState('Allow camera access in your browser to show this computer’s webcam.')
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      streamRef.current?.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = streamRef.current
+  }, [active])
+
+  async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMessage('Camera access is unavailable. Open this page over HTTPS or from localhost in a supported browser.')
+      return
+    }
+    setMessage('Requesting permission to use the webcam…')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({video: true, audio: false})
+      if (!mountedRef.current) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      streamRef.current = stream
+      setActive(true)
+      setMessage('Webcam is live on this device. The feed stays in your browser and is not sent to the monitoring backend.')
+    } catch (error) {
+      const name = error instanceof DOMException ? error.name : ''
+      setMessage(name === 'NotAllowedError'
+        ? 'Camera permission was denied. Allow camera access for this site in your browser settings, then try again.'
+        : name === 'NotFoundError'
+          ? 'No webcam was found. Connect or enable a camera, then try again.'
+          : name === 'NotReadableError'
+            ? 'The webcam is busy in another app. Close that app and try again.'
+            : 'Could not open the webcam. Check that it is connected and enabled.')
+    }
+  }
+
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach(track => track.stop())
+    streamRef.current = null
+    setActive(false)
+    setMessage('Webcam stopped.')
+  }
+
+  return <section className="cctv-screen webcam-screen">
+    <div className="cctv-screen-head"><div><p className="eyebrow">THIS DEVICE</p><h1>PC Webcam</h1><p>Open a camera connected to this computer</p></div><span className={`camera-state ${active ? 'connected' : 'disconnected'}`}>{active ? 'LIVE' : 'STOPPED'}</span></div>
+    <div className="webcam-controls"><div><b>Camera permission</b><small>Your browser will ask before turning on the webcam. Video and audio are not uploaded; microphone access is off.</small></div><div className="webcam-actions">{active ? <button className="camera-disconnect" onClick={stopCamera}>STOP WEBCAM</button> : <button className="camera-connect" onClick={() => void startCamera()}>OPEN PC WEBCAM</button>}</div></div>
+    <p className={`camera-message ${active ? 'connected' : ''}`} role="status">{message}</p>
+    <div className="cctv-viewer webcam-viewer" aria-label="PC webcam preview">
+      {active ? <video ref={videoRef} autoPlay muted playsInline aria-label="Live preview from this computer’s webcam"/> : <div className="cctv-empty"><span className="camera-pulse">◉</span><b>Webcam preview</b><small>Select “Open PC Webcam” and allow browser camera permission to begin.</small></div>}
+    </div>
+    <div className="cctv-screen-note">Local preview only. This webcam section does not send frames for tracking, drowning analysis, or alarm detection.</div>
+  </section>
 }
 
 function CctvPanel() {
