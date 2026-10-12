@@ -95,28 +95,28 @@ def health():
 
 
 class CameraConnection(BaseModel):
-    host: str = Field(min_length=1, max_length=253)
-    port: int = Field(default=554, ge=1, le=65535)
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=256)
-    path: str = Field(default="stream1", min_length=1, max_length=512)
 
 
 def cctv_status():
     with cctv_lock:
         stream = cctv_stream
-    return stream.snapshot() if stream else {"status": "disconnected", "error": None, "has_frame": False}
+    if stream:
+        return stream.snapshot()
+    return {"status": "not_configured" if not settings.cctv_rtsp_url else "disconnected",
+            "error": None, "has_frame": False}
 
 
 @app.post("/api/cctv/connect")
 def connect_cctv(connection: CameraConnection):
     global cctv_stream
-    host = connection.host.strip()
-    if any(char in host for char in "/@?#\\") or any(char.isspace() for char in host):
-        raise HTTPException(422, "Enter the camera's IP address or hostname only, without a URL scheme or path.")
-    if any(char in connection.path for char in "?#\\"):
-        raise HTTPException(422, "Enter the RTSP stream path without query strings.")
-    stream = CameraStream(host, connection.port, connection.username, connection.password, connection.path)
+    if not settings.cctv_rtsp_url.strip():
+        raise HTTPException(503, "Camera address is not configured. Add the camera RTSP URL to backend/.env as CCTV_RTSP_URL.")
+    try:
+        stream = CameraStream(settings.cctv_rtsp_url, connection.username, connection.password)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     with cctv_lock:
         previous = cctv_stream
         cctv_stream = stream

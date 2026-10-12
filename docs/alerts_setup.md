@@ -1,5 +1,7 @@
-# Alerts setup
+# Browser buzzer alerts
 
-The dashboard has a browser sound toggle. Click **ALARM OFF · ARM** once to allow the browser to play tones; browsers require a user gesture before audio playback. A tone is played for each newly recorded incident while the dashboard is open and able to play audio. Browser audio can be muted, throttled, or unavailable and must not be relied on as a safety alarm.
+The header has an **ALARM ON/OFF** control and **TEST SOUND** button. Click **ALARM OFF · ARM** once per page session; browsers require a user gesture before they allow sound. Keep the app open, the tab unmuted, and device volume audible.
 
-The supplied YOLO model's `Drowning` class now creates a **provisional detector WARNING** for the tracked person, and the incident is recorded as soon as it appears so the dashboard can sound it during processing. This is not an independently validated risk model; check the video and maintain human supervision. The temporal Random Forest can separately emit WARNING/EMERGENCY predictions only when a schema-compatible artifact is installed. SMS/remote notifications are not implemented. Remote notification still needs provider integration, secret handling, delivery-state logging, cooldowns, and a human-response protocol before use.
+When armed, the frontend checks for newly recorded `Drowning detector` warnings every 350 ms and plays a repeated, dual-tone buzzer for the first warning. Warnings generated for a video started in the current session are eligible even if they arrive before the first incident-list refresh. Buzzer playback is deduplicated while a sound is already playing.
+
+Browser audio is not a hardware siren and can be muted, throttled, or unavailable. CCTV currently provides a live preview only and does not generate detection events. Never rely on this prototype as the sole pool safety alarm; maintain continuous human supervision.

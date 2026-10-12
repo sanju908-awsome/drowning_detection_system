@@ -4,18 +4,23 @@ from __future__ import annotations
 import threading
 import time
 import os
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import cv2
 
 
 class CameraStream:
-    def __init__(self, host: str, port: int, username: str, password: str, path: str):
-        self.host = host.strip()
-        self.port = port
-        self.path = path.strip().lstrip("/") or "stream1"
-        auth = f"{quote(username, safe='')}:{quote(password, safe='')}@" if username else ""
-        self.url = f"rtsp://{auth}{self.host}:{port}/{self.path}"
+    def __init__(self, stream_url: str, username: str, password: str):
+        parts = urlsplit(stream_url.strip())
+        if parts.scheme not in {"rtsp", "rtsps"} or not parts.hostname:
+            raise ValueError("Camera address must be an RTSP URL with a host and stream path.")
+        host = parts.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = host + (f":{parts.port}" if parts.port else "")
+        if username:
+            netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{netloc}"
+        self.url = urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._frame: bytes | None = None
