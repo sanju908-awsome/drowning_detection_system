@@ -46,6 +46,10 @@ def run_job(job_id: str, source: Path, destination: Path):
         def save_preview(frame: bytes):
             with preview_lock:
                 latest_previews[job_id] = frame
+            # Keep the last annotated frame available after the worker finishes
+            # or the API process restarts, so completed jobs still show a preview.
+            preview_path = settings.output_dir / f"{job_id}-preview.jpg"
+            preview_path.write_bytes(frame)
         def record_event(event: dict):
             store.add_incidents(job_id, [event], datetime.now(timezone.utc).isoformat())
         summary = process_video(source, destination, settings, progress=update,
@@ -139,10 +143,15 @@ def video(job_id: str):
 
 @app.get("/api/jobs/{job_id}/preview")
 def preview(job_id: str):
-    if not store.get_job(job_id):
+    result = store.get_job(job_id)
+    if not result:
         raise HTTPException(404, "Job not found.")
     with preview_lock:
         frame = latest_previews.get(job_id)
+    if frame is None:
+        preview_path = settings.output_dir / f"{job_id}-preview.jpg"
+        if preview_path.is_file():
+            frame = preview_path.read_bytes()
     if frame is None:
         raise HTTPException(404, "The first tracked frame is not ready yet.")
     return Response(frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
