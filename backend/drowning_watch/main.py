@@ -10,7 +10,9 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, Field
 
+from .cctv import CameraStream
 from .processor import process_video
 from .settings import get_settings
 from .store import Store
@@ -22,10 +24,19 @@ store = Store(settings.database_url)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-worker")
 preview_lock = threading.Lock()
 latest_previews: dict[str, bytes] = {}
+cctv_lock = threading.Lock()
+cctv_stream: CameraStream | None = None
 @asynccontextmanager
 async def lifespan(_app):
+    global cctv_stream
     store.initialize()
-    yield
+    try:
+        yield
+    finally:
+        with cctv_lock:
+            stream, cctv_stream = cctv_stream, None
+        if stream:
+            stream.stop()
 
 
 app = FastAPI(title="Drowning Watch Research Prototype", version="0.1.0", lifespan=lifespan,
@@ -80,7 +91,71 @@ def health():
             "risk_model_available": settings.risk_model.is_file(),
             "pose_enabled": settings.pose_enabled and settings.pose_model.is_file(),
             "pose_requested": settings.pose_enabled, "pose_model_available": settings.pose_model.is_file(),
-            "cctv_enabled": False, "warning": "This prototype is not a substitute for trained lifeguards or emergency procedures."}
+            "cctv_enabled": cctv_status()["status"] == "connected", "warning": "This prototype is not a substitute for trained lifeguards or emergency procedures."}
+
+
+class CameraConnection(BaseModel):
+    host: str = Field(min_length=1, max_length=253)
+    port: int = Field(default=554, ge=1, le=65535)
+    username: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=256)
+    path: str = Field(default="stream1", min_length=1, max_length=512)
+
+
+def cctv_status():
+    with cctv_lock:
+        stream = cctv_stream
+    return stream.snapshot() if stream else {"status": "disconnected", "error": None, "has_frame": False}
+
+
+@app.post("/api/cctv/connect")
+def connect_cctv(connection: CameraConnection):
+    global cctv_stream
+    host = connection.host.strip()
+    if any(char in host for char in "/@?#\\") or any(char.isspace() for char in host):
+        raise HTTPException(422, "Enter the camera's IP address or hostname only, without a URL scheme or path.")
+    if any(char in connection.path for char in "?#\\"):
+        raise HTTPException(422, "Enter the RTSP stream path without query strings.")
+    stream = CameraStream(host, connection.port, connection.username, connection.password, connection.path)
+    with cctv_lock:
+        previous = cctv_stream
+        cctv_stream = stream
+    if previous:
+        previous.stop()
+    stream.start()
+    # Give the camera a short chance to return its first frame for useful UI feedback.
+    deadline = threading.Event()
+    for _ in range(55):
+        state = stream.snapshot()
+        if state["status"] != "connecting":
+            break
+        deadline.wait(0.1)
+    return stream.snapshot()
+
+
+@app.post("/api/cctv/disconnect")
+def disconnect_cctv():
+    global cctv_stream
+    with cctv_lock:
+        stream, cctv_stream = cctv_stream, None
+    if stream:
+        stream.stop()
+    return {"status": "disconnected", "error": None, "has_frame": False}
+
+
+@app.get("/api/cctv/status")
+def get_cctv_status():
+    return cctv_status()
+
+
+@app.get("/api/cctv/frame")
+def cctv_frame():
+    with cctv_lock:
+        stream = cctv_stream
+    frame = stream.frame() if stream else None
+    if frame is None:
+        raise HTTPException(404, "No camera frame is available yet.")
+    return Response(frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/jobs", status_code=202)
