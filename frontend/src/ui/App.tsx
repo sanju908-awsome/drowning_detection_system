@@ -1,11 +1,15 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL?.replace(/\/$/, '') || (import.meta.env.DEV ? 'http://localhost:8000' : '')
+function apiUrl(path: string) {
+  if (!API) throw new Error('The monitoring backend is not configured. Set VITE_API_URL in the Vercel project settings.')
+  return `${API}${path}`
+}
 type Job = { id: string; filename: string; status: string; progress: number; created_at: string; error?: string; summary?: { frames_processed: number; tracks_seen: number; risk_assessed: boolean; risk_reason?: string; pose_available?: boolean; pose_detections?: number }; video_url?: string | null }
 type Incident = { id: number; job_id: string; track_id: number; state: string; score: number | null; timestamp_seconds: number; created_at: string; class_name?: string | null }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API}${path}`, init)
+  const response = await fetch(apiUrl(path), init)
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || `Request failed (${response.status})`)
   return response.json()
 }
@@ -222,7 +226,7 @@ function CctvPanel() {
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetch(`${API}/api/cctv/frame`, {cache: 'no-store'})
+        const response = await fetch(apiUrl('/api/cctv/frame'), {cache: 'no-store'})
         if (!response.ok) return
         const next = URL.createObjectURL(await response.blob())
         if (!live) { URL.revokeObjectURL(next); return }
@@ -267,7 +271,7 @@ function Monitor({ job, incidents, health, busy, onUpload, onViewAll, soundEnabl
     <div className="monitor-title"><div><p className="eyebrow">VIDEO MONITOR / TRACKING VIEW</p><h1>{processing ? 'Live analysis' : queued ? 'Analysis queued' : complete ? 'Analysis result' : 'Analysis failed'}</h1><p className="lead monitor-filename">{job.filename}</p></div><div className="monitor-actions"><label className={`upload upload-small ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={onUpload}/><span>{busy ? 'UPLOADING…' : '＋ NEW VIDEO'}</span></label><button className="text-button" onClick={onViewAll}>ALL VIDEOS</button></div></div>
     {(processing || queued) && <div className="monitor-progress"><div className="progress-label"><span>{queued ? 'Waiting for the video worker to start' : 'Analyzing frames · live tracking updates as each frame is processed'}</span><b>{Math.round(job.progress || 0)}%</b></div><div className="progress"><i style={{ width: `${job.progress || 0}%` }}/></div></div>}
     <div className="monitor-layout"><div className="monitor-main">
-      {processing || queued ? <LivePreview jobId={job.id} active={processing}/> : complete ? <video className="monitor-video" controls src={`${API}/api/jobs/${job.id}/video`}/> : <div className="failure"><b>Analysis could not finish</b><p>{job.error}</p><p className="subtle">Check that trained YOLO weights are installed and configured.</p></div>}
+      {processing || queued ? <LivePreview jobId={job.id} active={processing}/> : complete ? <video className="monitor-video" controls src={apiUrl(`/api/jobs/${job.id}/video`)}/> : <div className="failure"><b>Analysis could not finish</b><p>{job.error}</p><p className="subtle">Check that trained YOLO weights are installed and configured.</p></div>}
       <div className="metrics monitor-metrics"><div><small>{complete ? 'FRAMES' : 'PROGRESS'}</small><b>{complete ? job.summary?.frames_processed ?? '—' : `${Math.round(job.progress || 0)}%`}</b></div><div><small>{complete ? 'TRACKS SEEN' : 'TRACKING'}</small><b>{complete ? job.summary?.tracks_seen ?? '—' : job.summary?.tracks_seen ?? 'ACTIVE'}</b></div><div><small>WARNINGS</small><b>{incidents.length}</b></div><div><small>POSE</small><b>{complete ? job.summary?.pose_available ? `${job.summary.pose_detections ?? 0}` : 'OFF' : health?.pose_enabled ? 'ON' : 'OFF'}</b></div></div>
       {complete && <p className="subtle">{job.summary?.risk_reason || 'Risk states require a validated temporal classifier.'}</p>}
     </div><aside className="monitor-side"><div className="panel monitor-status"><div className="panel-title"><div><p className="eyebrow">SYSTEM STATUS</p><h2>Analysis limits</h2></div></div><div className="status-line"><span>Temporal risk model</span><b className="muted">{health?.risk_model_available ? 'EXPERIMENTAL · BINARY' : 'NOT INSTALLED'}</b></div><div className="status-line"><span>Pose estimation</span><b>{health?.pose_enabled ? 'ENABLED' : 'DISABLED'}</b></div><div className="status-line"><span>Live CCTV preview</span><b className={health?.cctv_enabled ? '' : 'muted'}>{health?.cctv_enabled ? 'CONNECTED · PREVIEW' : 'NOT CONNECTED'}</b></div><p className="note">The model predicts only SAFE/EMERGENCY; alerts are not safety-validated. Keep a human supervisor watching the pool.</p></div>
@@ -286,7 +290,7 @@ function LivePreview({ jobId, active }: { jobId: string; active: boolean }) {
       if (inFlight) return
       inFlight = true
       try {
-        const response = await fetch(`${API}/api/jobs/${jobId}/preview`, { cache: 'no-store' })
+        const response = await fetch(apiUrl(`/api/jobs/${jobId}/preview`), { cache: 'no-store' })
         if (!response.ok) return
         const nextUrl = URL.createObjectURL(await response.blob())
         if (!mounted) { URL.revokeObjectURL(nextUrl); return }
