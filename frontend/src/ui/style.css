@@ -3,6 +3,7 @@
 .event-tools{display:flex;align-items:center;gap:8px}.sound-toggle{background:transparent;border:1px solid #315963;padding:5px 7px;color:#86aaa9;font:8px DM Mono,monospace;letter-spacing:.6px;cursor:pointer}.sound-toggle.active{color:#56dfc2;border-color:#3e9c86}
 .sound-toggle{font-family:'DM Mono',monospace}
 .sound-toggle.sound-off{color:#f2c56e;border-color:#9a7435}
+.sound-test{background:#a83232;border:1px solid #ff7770;padding:6px 9px;color:#fff;font:700 9px 'DM Mono',monospace;letter-spacing:.6px;cursor:pointer;box-shadow:0 0 12px #e4473733}.sound-test:hover{background:#d53f39;box-shadow:0 0 16px #e4473777}.sound-test:focus-visible,.sound-toggle:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .shell{max-width:1500px;padding:0 32px}
 .monitor{padding:32px 0 46px;min-height:calc(100vh - 82px)}
 .monitor-title{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:22px}
