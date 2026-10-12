@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: drowning-watch-api
+    runtime: python
+    plan: standard
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn drowning_watch.main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    disk:
+      name: drowning-watch-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: OUTPUT_DIR
+        value: /var/data/outputs
+      - key: DATABASE_URL
+        value: sqlite:////var/data/drowning_watch.db
+      - key: YOLO_MODEL
+        value: /var/data/best.pt
+      - key: POSE_MODEL
+        value: /var/data/pose_landmarker.task
+      - key: RISK_MODEL
+        value: /var/data/risk_model.joblib
+      - key: FRONTEND_ORIGINS
+        sync: false
