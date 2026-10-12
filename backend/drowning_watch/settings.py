@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     deepsort_max_age: int = 30
     deepsort_n_init: int = 3
     deepsort_max_cosine_distance: float = 0.3
-    pose_enabled: bool = False
+    pose_enabled: bool = True
     pose_model: Path = Path("./models/pose_landmarker.task")
     risk_model: Path = Path("./models/risk_model.joblib")
     risk_min_observations: int = 30

@@ -14,7 +14,9 @@ MAX_TRACK_HISTORY_GAP_SECONDS = 1.0
 
 
 def process_video(source: Path, destination: Path, settings: Settings,
-                  progress: Callable[[float], None] | None = None) -> dict:
+                  progress: Callable[[float], None] | None = None,
+                  preview: Callable[[bytes], None] | None = None,
+                  on_event: Callable[[dict], None] | None = None) -> dict:
     """Run detector -> DeepSORT -> optional pose -> per-track motion features."""
     if not settings.yolo_model.is_file():
         raise FileNotFoundError(f"YOLO weights not found: {settings.yolo_model}. Train a detector and set YOLO_MODEL.")
@@ -51,7 +53,8 @@ def process_video(source: Path, destination: Path, settings: Settings,
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(destination), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    # VP8/WebM is supported by Chromium without platform H.264 encoder libraries.
+    writer = cv2.VideoWriter(str(destination), cv2.VideoWriter_fourcc(*"VP80"), fps, (width, height))
     if not writer.isOpened():
         capture.release()
         raise RuntimeError("Could not create processed video. Check codec support and output permissions.")
@@ -65,6 +68,8 @@ def process_video(source: Path, destination: Path, settings: Settings,
         clear_frames=settings.risk_clear_confirmation_frames,
     ))
     events: dict[tuple[int, str], dict] = {}
+    detector_alerted: set[int] = set()
+    pose_detections = 0
     frame_index = 0
     people_seen: set[int] = set()
     try:
@@ -96,6 +101,7 @@ def process_video(source: Path, destination: Path, settings: Settings,
                 names = detector.names
                 class_name = str(names.get(class_id, class_id) if isinstance(names, dict) else names[class_id])
                 confidence = track.get_det_conf()
+                detector_drowning = class_name.strip().casefold() == "drowning"
                 history = histories[track_id]
                 if history.observations and now - history.observations[-1]["t"] > MAX_TRACK_HISTORY_GAP_SECONDS:
                     history = TrackHistory()
@@ -116,6 +122,19 @@ def process_video(source: Path, destination: Path, settings: Settings,
                         if pose_result.pose_landmarks:
                             landmarks = pose_result.pose_landmarks[0]
                             visibility = sum(lm.visibility for lm in landmarks) / len(landmarks)
+                            pose_detections += 1
+                            points = []
+                            crop_h, crop_w = rgb_crop.shape[:2]
+                            for landmark in landmarks:
+                                point = (x1 + int(landmark.x * crop_w), y1 + int(landmark.y * crop_h))
+                                points.append(point)
+                                if landmark.visibility >= 0.45:
+                                    cv2.circle(frame, point, 3, (70, 230, 245), -1)
+                            for start, end in ((11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+                                               (11, 23), (12, 24), (23, 24), (23, 25), (25, 27),
+                                               (24, 26), (26, 28)):
+                                if landmarks[start].visibility >= 0.45 and landmarks[end].visibility >= 0.45:
+                                    cv2.line(frame, points[start], points[end], (70, 230, 245), 2)
                     except Exception:
                         visibility = None
                 history.add(now, (x1, y1, x2, y2), confidence if confidence is not None else 0.0, visibility)
@@ -124,17 +143,40 @@ def process_video(source: Path, destination: Path, settings: Settings,
                 risk_state = risk_logic[track_id].update(raw_prediction, int(features["observations"]))
                 label = f"{class_name} | ID {track_id} | {risk_state['state']}"
                 color = (0, 180, 255) if risk_state["state"] == "WARNING" else (0, 0, 255) if risk_state["state"] == "EMERGENCY" else (0, 220, 0)
+                if detector_drowning:
+                    label = f"DROWNING DETECTION WARNING | ID {track_id}"
+                    color = (0, 0, 255)
+                    if track_id not in detector_alerted:
+                        event = {"track_id": track_id, "state": "WARNING",
+                                 "score": float(confidence) if confidence is not None else None,
+                                 "timestamp_seconds": now, "class_name": "Drowning detector"}
+                        events[(track_id, "DETECTOR_WARNING")] = event
+                        detector_alerted.add(track_id)
+                        if on_event:
+                            on_event(event)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(frame, label, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                 if risk_state["state"] in {"WARNING", "EMERGENCY"}:
                     key = (track_id, risk_state["state"])
-                    events.setdefault(key, {"track_id": track_id, "state": risk_state["state"],
-                                            "score": risk_state["score"], "timestamp_seconds": now,
-                                            "class_name": class_name})
+                    if key not in events:
+                        event = {"track_id": track_id, "state": risk_state["state"],
+                                 "score": risk_state["score"], "timestamp_seconds": now,
+                                 "class_name": class_name}
+                        events[key] = event
+                        if on_event:
+                            on_event(event)
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             cv2.putText(frame, f"{stamp} | SAFETY SUPPORT PROTOTYPE | Risk: {'active model' if risk.ready else 'UNASSESSED'}",
                         (10, height - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             writer.write(frame)
+            if preview and frame_index % max(1, int(fps / 3)) == 0:
+                preview_width = min(640, width)
+                preview_height = max(1, int(height * preview_width / width))
+                preview_frame = cv2.resize(frame, (preview_width, preview_height))
+                encoded_ok, encoded = cv2.imencode(".jpg", preview_frame,
+                                                    [cv2.IMWRITE_JPEG_QUALITY, 78])
+                if encoded_ok:
+                    preview(encoded.tobytes())
             frame_index += 1
             if progress and frame_count:
                 progress(min(99.0, frame_index * 100.0 / frame_count))
@@ -148,4 +190,5 @@ def process_video(source: Path, destination: Path, settings: Settings,
     return {"frames_processed": frame_index, "fps": fps, "tracks_seen": len(people_seen),
             "risk_assessed": risk.ready, "events": list(events.values()),
             "risk_reason": risk.reason or None, "pose_available": pose is not None,
+            "pose_detections": pose_detections,
             "pose_reason": pose_reason}

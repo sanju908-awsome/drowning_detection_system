@@ -2,7 +2,7 @@
 
 ## Implemented local flow
 
-`video upload → FastAPI job queue → OpenCV frame reader → Ultralytics YOLO detector → DeepSORT adapter → optional MediaPipe pose → per-track motion-v1 features → optional Random Forest → annotated MP4 + SQLite job/incident rows`
+`video upload → FastAPI job queue → OpenCV frame reader → Ultralytics YOLO detector → DeepSORT adapter → optional MediaPipe pose → per-track motion-v1 features → optional Random Forest → annotated WebM + SQLite job/incident rows`
 
 The React/Vite dashboard uploads video, polls jobs, previews completed output, and lists persisted jobs and model-generated warning/emergency incidents. Inference runs in a single in-process worker thread. The flow and UI explicitly show **UNASSESSED** if the temporal classifier is missing or incompatible.
 

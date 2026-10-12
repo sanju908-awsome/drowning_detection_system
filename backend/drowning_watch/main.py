@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import uuid
+import threading
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from .processor import process_video
 from .settings import get_settings
@@ -19,6 +20,8 @@ settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.output_dir.mkdir(parents=True, exist_ok=True)
 store = Store(settings.database_url)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-worker")
+preview_lock = threading.Lock()
+latest_previews: dict[str, bytes] = {}
 @asynccontextmanager
 async def lifespan(_app):
     store.initialize()
@@ -40,8 +43,13 @@ def run_job(job_id: str, source: Path, destination: Path):
             if whole_percent != last_percent[0]:
                 store.update_job(job_id, progress=whole_percent)
                 last_percent[0] = whole_percent
-        summary = process_video(source, destination, settings, progress=update)
-        store.add_incidents(job_id, summary["events"], datetime.now(timezone.utc).isoformat())
+        def save_preview(frame: bytes):
+            with preview_lock:
+                latest_previews[job_id] = frame
+        def record_event(event: dict):
+            store.add_incidents(job_id, [event], datetime.now(timezone.utc).isoformat())
+        summary = process_video(source, destination, settings, progress=update,
+                                preview=save_preview, on_event=record_event)
         store.update_job(job_id, status="completed", progress=100, output_path=str(destination),
                          summary=json.dumps(summary))
     except Exception as exc:
@@ -76,7 +84,7 @@ async def create_job(file: UploadFile = File(...)):
     original_name, suffix = validate_video_upload(file.filename or "upload", file.content_type or "")
     job_id = uuid.uuid4().hex
     source = settings.upload_dir / f"{job_id}{suffix}"
-    destination = settings.output_dir / f"{job_id}.mp4"
+    destination = settings.output_dir / f"{job_id}.webm"
     size, limit = 0, settings.max_upload_mb * 1024 * 1024
     try:
         with source.open("wb") as out:
@@ -89,6 +97,8 @@ async def create_job(file: UploadFile = File(...)):
             raise HTTPException(400, "The uploaded file is empty.")
         created = datetime.now(timezone.utc).isoformat()
         store.create_job(job_id, original_name, created)
+        with preview_lock:
+            latest_previews.pop(job_id, None)
         executor.submit(run_job, job_id, source, destination)
         return {"id": job_id, "filename": original_name, "status": "queued", "created_at": created}
     except Exception:
@@ -121,7 +131,21 @@ def video(job_id: str):
     path = Path(result["output_path"]).resolve()
     if not path.is_relative_to(settings.output_dir.resolve()) or not path.is_file():
         raise HTTPException(404, "Processed video is not available.")
-    return FileResponse(path, media_type="video/mp4", filename=f"{job_id}-processed.mp4")
+    is_webm = path.suffix.lower() == ".webm"
+    suffix = ".webm" if is_webm else ".mp4"
+    media_type = "video/webm" if is_webm else "video/mp4"
+    return FileResponse(path, media_type=media_type, filename=f"{job_id}-processed{suffix}")
+
+
+@app.get("/api/jobs/{job_id}/preview")
+def preview(job_id: str):
+    if not store.get_job(job_id):
+        raise HTTPException(404, "Job not found.")
+    with preview_lock:
+        frame = latest_previews.get(job_id)
+    if frame is None:
+        raise HTTPException(404, "The first tracked frame is not ready yet.")
+    return Response(frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/incidents")

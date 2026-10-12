@@ -2,13 +2,13 @@
 
 ## Current state
 
-No temporal labels or trained classifier were present. The inference path returns `UNASSESSED` when no valid artifact exists, and also rejects a model whose schema version or feature ordering differs. Detector class names do not train this model. Warning and emergency incidents are persisted only if a compatible RF artifact returns those labels.
+No temporal labels or trained classifier were present. The temporal inference path returns `UNASSESSED` when no valid artifact exists, and also rejects a model whose schema version or feature ordering differs. The supplied YOLO `Drowning` class separately emits a provisional detector WARNING after a tracked detection; this is not a trained temporal risk classifier and does not produce an EMERGENCY state. Compatible RF predictions can separately emit WARNING/EMERGENCY after confirmation.
 
 ## Feature schema motion-v1
 
 `backend/drowning_watch/features.py` maintains the latest 150 observations per track (window capped by count, not seconds). Processing resets a history after a gap longer than one second. Features are raw pixel/time values and should only be compared under consistent camera geometry and frame timing. Missing pose observations are omitted from the visibility average; a track with no pose observations gets 0.0. Features are: observation count (frames), track duration (seconds), mean center speed (pixels/second), population standard deviation of speed (pixels/second), net center displacement (pixels), mean detector confidence (unit interval), and pose visibility ratio (mean MediaPipe landmark visibility; 0 when unavailable). These describe motion/quality; none alone identifies distress.
 
-Pose uses MediaPipe Tasks Pose Landmarker in IMAGE mode on each tracked crop. It requires a compatible `.task` model asset; set `POSE_ENABLED=true` and `POSE_MODEL=...` only after installing that asset. Pose errors or missing/low-visibility landmarks do not stop video processing. The official task guide lists model options and supported modes: [MediaPipe Pose Landmarker for Python](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/python). The supplied project has no pose model asset, and swimming-pool pose availability/benefit has not been evaluated.
+Pose uses MediaPipe Tasks Pose Landmarker in IMAGE mode on each tracked crop. It requires a compatible `.task` model asset at `models/pose_landmarker.task`; pose is enabled by default in local settings and missing/low-visibility landmarks do not stop video processing. Visible landmarks are overlaid in the live preview and processed video. The official task guide lists model options and supported modes: [MediaPipe Pose Landmarker for Python](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/python). Swimming-pool pose availability and benefit have not been evaluated.
 
 ## Training workflow
 

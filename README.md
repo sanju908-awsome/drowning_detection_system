@@ -7,8 +7,9 @@ PoolWatch is a local research prototype for analyzing swimming-pool videos with 
 ## Current implementation
 
 * FastAPI accepts bounded video uploads and runs jobs in a local worker thread.
-* OpenCV decodes/annotates video, Ultralytics YOLO performs frame detections, and DeepSORT maintains track IDs.
-* Optional MediaPipe Pose extracts a visibility summary; pose is disabled by default.
+* OpenCV decodes/annotates video, Ultralytics YOLO performs frame detections, and DeepSORT maintains track IDs. The selected job shows a refreshed tracking preview while processing.
+* The supplied detector's `Drowning` class creates a provisional WARNING incident; it is a detector result, not a validated temporal risk score. Browser tones must be armed in the dashboard.
+* MediaPipe Pose draws visible body landmarks when its local task asset is present; the local setup enables pose by default.
 * A versioned motion feature extractor keeps per-track histories. Missing/untrained risk classifier means UNASSESSED.
 * SQLite stores job/incident history. React + TypeScript + Vite presents uploads, progress, processed video and event history.
 * Reproducible dataset audit, dataset YAML preparation, YOLO training/test evaluation, and group-separated RF training tools are included.
