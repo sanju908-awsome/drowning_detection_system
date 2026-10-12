@@ -18,7 +18,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [incidentsLoaded, setIncidentsLoaded] = useState(false)
-  const [soundEnabled, setSoundEnabled] = useState(false)
+  const [soundEnabled, setSoundEnabled] = useState(true)
   const [screen, setScreen] = useState<'analysis' | 'cctv'>('analysis')
   const knownIncidents = useRef<Set<number> | null>(null)
   const alertedIncidentIds = useRef<Set<number>>(new Set())
@@ -54,7 +54,7 @@ export default function App() {
     const newDrowning = incidents.filter(item => item.class_name?.trim().toLowerCase() === 'drowning detector'
       && !alertedIncidentIds.current.has(item.id)
       && (knownIncidents.current === null ? alertableJobs.current.has(item.job_id) : !knownIncidents.current.has(item.id) || alertableJobs.current.has(item.job_id)))
-    if (soundEnabled && newDrowning.length) {
+    if (soundEnabled && newDrowning.length && audioContext.current?.state === 'running') {
       newDrowning.forEach(item => alertedIncidentIds.current.add(item.id))
       playAlert()
     }
@@ -110,6 +110,22 @@ export default function App() {
     }
   }
 
+  function unlockSound() {
+    if (!soundEnabled) return
+    const context = getAudioContext()
+    if (!context) return
+    void context.resume().then(() => {
+      if (context.state !== 'running') return
+      const pending = incidents.find(item => item.class_name?.trim().toLowerCase() === 'drowning detector'
+        && !alertedIncidentIds.current.has(item.id)
+        && (alertableJobs.current.has(item.job_id) || knownIncidents.current?.has(item.id) === false))
+      if (pending) {
+        alertedIncidentIds.current.add(pending.id)
+        void playBuzzer()
+      }
+    }).catch(() => undefined)
+  }
+
   function playAlert() {
     if (soundEnabled) void playBuzzer()
   }
@@ -128,7 +144,7 @@ export default function App() {
     finally { setBusy(false) }
   }
 
-  return <main className="shell">
+  return <main className="shell" onPointerDownCapture={unlockSound} onKeyDownCapture={unlockSound}>
     <header className="top"><div className="brand"><span className="mark">◉</span><div><strong>POOLWATCH</strong><small>VIDEO SAFETY RESEARCH PROTOTYPE</small></div></div><nav className="screen-nav" aria-label="Application screens"><button className={screen === 'analysis' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('analysis')}>VIDEO ANALYSIS</button><button className={screen === 'cctv' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('cctv')}>CCTV LIVE</button></nav><div className="header-alert"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><button className="sound-test" onClick={() => void playBuzzer()}>TEST SOUND</button></div><div className="connection"><i className={health?.status === 'ok' ? 'dot online' : 'dot'} />{health?.status === 'ok' ? 'SERVICE CONNECTED' : 'SERVICE OFFLINE'}</div></header>
     {screen === 'cctv' ? <CctvPanel /> : <>
     {!selected && <section className="hero"><div><p className="eyebrow">MONITORING CONSOLE / LOCAL ANALYSIS</p><h1>Every second<br/><em>matters.</em></h1><p className="lead">Analyze pool footage with object detection and persistent person tracking.</p><label className={`upload ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={upload}/><span>{busy ? 'UPLOADING…' : '＋  ANALYZE A VIDEO'}</span></label><span className="meta">MP4, MOV, AVI, MKV, WEBM · max 500 MB</span></div><div className="status-card"><div className="card-head"><span>SYSTEM STATUS</span><span className="pulse"/></div><div className="risk"><span className="risk-icon">!</span><div><strong>RISK UNASSESSED</strong><small>{health?.risk_model_available ? 'Temporal classifier is configured' : 'No validated temporal model is installed'}</small></div></div><div className="status-line"><span>Person tracker</span><b>DeepSORT</b></div><div className="status-line"><span>Live CCTV</span><b className={health?.cctv_enabled ? '' : 'muted'}>{health?.cctv_enabled ? 'CONNECTED' : 'NOT CONNECTED'}</b></div><div className="status-line"><span>Pose estimation</span><b className="muted">{health?.pose_enabled ? 'ENABLED' : health?.pose_requested ? 'MODEL MISSING' : 'DISABLED'}</b></div><p className="note">Detection labels are not a validated drowning-risk score. Maintain continuous human supervision.</p></div></section>}

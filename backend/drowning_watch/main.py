@@ -112,7 +112,7 @@ def cctv_status():
 def connect_cctv(connection: CameraConnection):
     global cctv_stream
     if not settings.cctv_rtsp_url.strip():
-        raise HTTPException(503, "Camera address is not configured. Add the camera RTSP URL to backend/.env as CCTV_RTSP_URL.")
+        raise HTTPException(503, "Camera address is not configured. Add the camera RTSP URL to the project .env as CCTV_RTSP_URL, then restart the backend.")
     try:
         stream = CameraStream(settings.cctv_rtsp_url, connection.username, connection.password)
     except ValueError as exc:
