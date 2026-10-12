@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     risk_warning_confirmation_frames: int = 5
     risk_emergency_confirmation_frames: int = 3
     risk_clear_confirmation_frames: int = 15
-    frontend_origins: str = "http://localhost:5173"
+    frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

@@ -20,6 +20,7 @@ outputs/
 *.sqlite3
 *.db
 node_modules/
+.pnpm-store/
 frontend/dist/
 frontend/.vite/
 *.log
