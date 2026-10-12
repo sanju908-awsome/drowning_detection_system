@@ -1,4 +1,5 @@
 import json
+import hmac
 import mimetypes
 import uuid
 import threading
@@ -7,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -18,6 +19,8 @@ from .settings import get_settings
 from .store import Store
 
 settings = get_settings()
+if settings.app_env.lower() == "production" and not settings.api_access_code.strip():
+    raise RuntimeError("API_ACCESS_CODE must be configured before production mode can start.")
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.output_dir.mkdir(parents=True, exist_ok=True)
 store = Store(settings.database_url)
@@ -49,10 +52,22 @@ async def lifespan(_app):
             stream.stop()
 
 
+async def require_access_code(request: Request):
+    if request.url.path in {"/api/health", "/api/auth/verify"}:
+        return
+    expected = settings.api_access_code
+    if expected:
+        authorization = request.headers.get("authorization", "")
+        scheme, _, candidate = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(candidate, expected):
+            raise HTTPException(401, "Enter the monitoring access code.")
+
+
 app = FastAPI(title="Drowning Watch Research Prototype", version="0.1.0", lifespan=lifespan,
-              description="Safety-support research prototype. Never use as a substitute for a lifeguard.")
+              description="Safety-support research prototype. Never use as a substitute for a lifeguard.",
+              dependencies=[Depends(require_access_code)])
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
-                   allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+                   allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"])
 
 
 def run_job(job_id: str, source: Path, destination: Path):
@@ -102,6 +117,18 @@ def health():
             "pose_enabled": settings.pose_enabled and settings.pose_model.is_file(),
             "pose_requested": settings.pose_enabled, "pose_model_available": settings.pose_model.is_file(),
             "cctv_enabled": cctv_status()["status"] == "connected", "warning": "This prototype is not a substitute for trained lifeguards or emergency procedures."}
+
+
+class AccessCodeRequest(BaseModel):
+    access_code: str = Field(min_length=1, max_length=256)
+
+
+@app.post("/api/auth/verify")
+def verify_access_code(request: AccessCodeRequest):
+    expected = settings.api_access_code
+    if expected and not hmac.compare_digest(request.access_code, expected):
+        raise HTTPException(401, "The access code is incorrect.")
+    return {"valid": True}
 
 
 class CameraConnection(BaseModel):

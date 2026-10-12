@@ -1,20 +1,71 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 
 const API = import.meta.env.VITE_API_URL?.replace(/\/$/, '') || (import.meta.env.DEV ? 'http://localhost:8000' : '')
+let currentAccessCode = typeof window !== 'undefined' ? sessionStorage.getItem('poolwatch-access-code') || '' : ''
 function apiUrl(path: string) {
   if (!API) throw new Error('The monitoring backend is not configured. Set VITE_API_URL in the Vercel project settings.')
   return `${API}${path}`
+}
+async function authorizedFetch(path: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers)
+  if (currentAccessCode) headers.set('Authorization', `Bearer ${currentAccessCode}`)
+  const response = await fetch(apiUrl(path), {...init, headers})
+  if (response.status === 401) {
+    currentAccessCode = ''
+    sessionStorage.removeItem('poolwatch-access-code')
+    window.dispatchEvent(new Event('poolwatch-auth-expired'))
+  }
+  return response
 }
 type Job = { id: string; filename: string; status: string; progress: number; created_at: string; error?: string; summary?: { frames_processed: number; tracks_seen: number; risk_assessed: boolean; risk_reason?: string; pose_available?: boolean; pose_detections?: number }; video_url?: string | null }
 type Incident = { id: number; job_id: string; track_id: number; state: string; score: number | null; timestamp_seconds: number; created_at: string; class_name?: string | null }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(path), init)
+  const response = await authorizedFetch(path, init)
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || `Request failed (${response.status})`)
   return response.json()
 }
 
 export default function App() {
+  const [accessCode, setAccessCode] = useState(() => sessionStorage.getItem('poolwatch-access-code') || '')
+  useEffect(() => {
+    currentAccessCode = accessCode
+    const clear = () => setAccessCode('')
+    window.addEventListener('poolwatch-auth-expired', clear)
+    return () => window.removeEventListener('poolwatch-auth-expired', clear)
+  }, [accessCode])
+  if (!accessCode) return <AccessGate onAuthenticated={code => { currentAccessCode = code; sessionStorage.setItem('poolwatch-access-code', code); setAccessCode(code) }} />
+  return <MonitoringApp onLogout={() => { currentAccessCode = ''; sessionStorage.removeItem('poolwatch-access-code'); setAccessCode('') }} />
+}
+
+function AccessGate({onAuthenticated}: {onAuthenticated: (code: string) => void}) {
+  const [code, setCode] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  async function unlock(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      const response = await fetch(apiUrl('/api/auth/verify'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({access_code: code})})
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || 'Could not verify the access code.')
+      onAuthenticated(code)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not connect to the monitoring service.')
+    } finally { setBusy(false) }
+  }
+  return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}>
+    <section className="panel" style={{width: 'min(100%, 460px)', padding: '2rem'}}>
+      <p className="eyebrow">POOLWATCH · PRIVATE MONITORING</p><h1 style={{fontSize: '2rem', margin: '0 0 .5rem'}}>Enter access code</h1>
+      <p className="subtle">Use the private code provided by the system owner to open monitoring data and controls.</p>
+      <form onSubmit={unlock} style={{display: 'grid', gap: '1rem', marginTop: '1.5rem'}}>
+        <label>ACCESS CODE<input autoComplete="current-password" type="password" required value={code} onChange={event => setCode(event.target.value)} aria-label="Monitoring access code" style={{display: 'block', width: '100%', marginTop: '.5rem'}} /></label>
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="camera-connect" disabled={busy || !code}>{busy ? 'CHECKING…' : 'UNLOCK MONITOR'}</button>
+      </form>
+    </section>
+  </main>
+}
+
+function MonitoringApp({onLogout}: {onLogout: () => void}) {
   const [health, setHealth] = useState<any>(null)
   const [jobs, setJobs] = useState<Job[]>([])
   const [incidents, setIncidents] = useState<Incident[]>([])
@@ -149,7 +200,7 @@ export default function App() {
   }
 
   return <main className="shell" onPointerDownCapture={unlockSound} onKeyDownCapture={unlockSound}>
-    <header className="top"><div className="brand"><span className="mark">◉</span><div><strong>POOLWATCH</strong><small>VIDEO SAFETY RESEARCH PROTOTYPE</small></div></div><nav className="screen-nav" aria-label="Application screens"><button className={screen === 'analysis' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('analysis')}>VIDEO ANALYSIS</button><button className={screen === 'cctv' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('cctv')}>CCTV LIVE</button></nav><div className="header-alert"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><button className="sound-test" onClick={() => void playBuzzer()}>TEST SOUND</button></div><div className="connection"><i className={health?.status === 'ok' ? 'dot online' : 'dot'} />{health?.status === 'ok' ? 'SERVICE CONNECTED' : 'SERVICE OFFLINE'}</div></header>
+    <header className="top"><div className="brand"><span className="mark">◉</span><div><strong>POOLWATCH</strong><small>VIDEO SAFETY RESEARCH PROTOTYPE</small></div></div><nav className="screen-nav" aria-label="Application screens"><button className={screen === 'analysis' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('analysis')}>VIDEO ANALYSIS</button><button className={screen === 'cctv' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('cctv')}>CCTV LIVE</button></nav><div className="header-alert"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><button className="sound-test" onClick={() => void playBuzzer()}>TEST SOUND</button><button className="text-button" onClick={onLogout}>LOCK</button></div><div className="connection"><i className={health?.status === 'ok' ? 'dot online' : 'dot'} />{health?.status === 'ok' ? 'SERVICE CONNECTED' : 'SERVICE OFFLINE'}</div></header>
     {screen === 'cctv' ? <CctvPanel /> : <>
     {!selected && <section className="hero"><div><p className="eyebrow">MONITORING CONSOLE / LOCAL ANALYSIS</p><h1>Every second<br/><em>matters.</em></h1><p className="lead">Analyze pool footage with object detection and persistent person tracking.</p><label className={`upload ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={upload}/><span>{busy ? 'UPLOADING…' : '＋  ANALYZE A VIDEO'}</span></label><span className="meta">MP4, MOV, AVI, MKV, WEBM · max 500 MB</span></div><div className="status-card"><div className="card-head"><span>SYSTEM STATUS</span><span className="pulse"/></div><div className="risk"><span className="risk-icon">!</span><div><strong>RISK UNASSESSED</strong><small>{health?.risk_model_available ? 'Experimental SAFE/EMERGENCY temporal model installed' : 'No temporal model is installed'}</small></div></div><div className="status-line"><span>Person tracker</span><b>DeepSORT</b></div><div className="status-line"><span>Live CCTV</span><b className={health?.cctv_enabled ? '' : 'muted'}>{health?.cctv_enabled ? 'CONNECTED' : 'NOT CONNECTED'}</b></div><div className="status-line"><span>Pose estimation</span><b className="muted">{health?.pose_enabled ? 'ENABLED' : health?.pose_requested ? 'MODEL MISSING' : 'DISABLED'}</b></div><p className="note">Experimental motion alerts are not safety-validated and do not replace human supervision.</p></div></section>}
     {error && <div className="error" role="alert">{error}<button onClick={() => void refresh()}>Retry</button></div>}
@@ -226,7 +277,7 @@ function CctvPanel() {
       if (requestPending) return
       requestPending = true
       try {
-        const response = await fetch(apiUrl('/api/cctv/frame'), {cache: 'no-store'})
+        const response = await authorizedFetch('/api/cctv/frame', {cache: 'no-store'})
         if (!response.ok) return
         const next = URL.createObjectURL(await response.blob())
         if (!live) { URL.revokeObjectURL(next); return }
@@ -271,7 +322,7 @@ function Monitor({ job, incidents, health, busy, onUpload, onViewAll, soundEnabl
     <div className="monitor-title"><div><p className="eyebrow">VIDEO MONITOR / TRACKING VIEW</p><h1>{processing ? 'Live analysis' : queued ? 'Analysis queued' : complete ? 'Analysis result' : 'Analysis failed'}</h1><p className="lead monitor-filename">{job.filename}</p></div><div className="monitor-actions"><label className={`upload upload-small ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={onUpload}/><span>{busy ? 'UPLOADING…' : '＋ NEW VIDEO'}</span></label><button className="text-button" onClick={onViewAll}>ALL VIDEOS</button></div></div>
     {(processing || queued) && <div className="monitor-progress"><div className="progress-label"><span>{queued ? 'Waiting for the video worker to start' : 'Analyzing frames · live tracking updates as each frame is processed'}</span><b>{Math.round(job.progress || 0)}%</b></div><div className="progress"><i style={{ width: `${job.progress || 0}%` }}/></div></div>}
     <div className="monitor-layout"><div className="monitor-main">
-      {processing || queued ? <LivePreview jobId={job.id} active={processing}/> : complete ? <video className="monitor-video" controls src={apiUrl(`/api/jobs/${job.id}/video`)}/> : <div className="failure"><b>Analysis could not finish</b><p>{job.error}</p><p className="subtle">Check that trained YOLO weights are installed and configured.</p></div>}
+      {processing || queued ? <LivePreview jobId={job.id} active={processing}/> : complete ? <ProtectedVideo jobId={job.id}/> : <div className="failure"><b>Analysis could not finish</b><p>{job.error}</p><p className="subtle">Check that trained YOLO weights are installed and configured.</p></div>}
       <div className="metrics monitor-metrics"><div><small>{complete ? 'FRAMES' : 'PROGRESS'}</small><b>{complete ? job.summary?.frames_processed ?? '—' : `${Math.round(job.progress || 0)}%`}</b></div><div><small>{complete ? 'TRACKS SEEN' : 'TRACKING'}</small><b>{complete ? job.summary?.tracks_seen ?? '—' : job.summary?.tracks_seen ?? 'ACTIVE'}</b></div><div><small>WARNINGS</small><b>{incidents.length}</b></div><div><small>POSE</small><b>{complete ? job.summary?.pose_available ? `${job.summary.pose_detections ?? 0}` : 'OFF' : health?.pose_enabled ? 'ON' : 'OFF'}</b></div></div>
       {complete && <p className="subtle">{job.summary?.risk_reason || 'Risk states require a validated temporal classifier.'}</p>}
     </div><aside className="monitor-side"><div className="panel monitor-status"><div className="panel-title"><div><p className="eyebrow">SYSTEM STATUS</p><h2>Analysis limits</h2></div></div><div className="status-line"><span>Temporal risk model</span><b className="muted">{health?.risk_model_available ? 'EXPERIMENTAL · BINARY' : 'NOT INSTALLED'}</b></div><div className="status-line"><span>Pose estimation</span><b>{health?.pose_enabled ? 'ENABLED' : 'DISABLED'}</b></div><div className="status-line"><span>Live CCTV preview</span><b className={health?.cctv_enabled ? '' : 'muted'}>{health?.cctv_enabled ? 'CONNECTED · PREVIEW' : 'NOT CONNECTED'}</b></div><p className="note">The model predicts only SAFE/EMERGENCY; alerts are not safety-validated. Keep a human supervisor watching the pool.</p></div>
@@ -290,7 +341,7 @@ function LivePreview({ jobId, active }: { jobId: string; active: boolean }) {
       if (inFlight) return
       inFlight = true
       try {
-        const response = await fetch(apiUrl(`/api/jobs/${jobId}/preview`), { cache: 'no-store' })
+        const response = await authorizedFetch(`/api/jobs/${jobId}/preview`, { cache: 'no-store' })
         if (!response.ok) return
         const nextUrl = URL.createObjectURL(await response.blob())
         if (!mounted) { URL.revokeObjectURL(nextUrl); return }
@@ -312,4 +363,20 @@ function LivePreview({ jobId, active }: { jobId: string; active: boolean }) {
   return <div className="preview-wrap"><div className="preview-heading"><span><b>TRACKING VIEW</b><small>Annotated frames · boxes show detected people · IDs follow tracks</small></span><span className={active ? 'preview-live' : 'preview-live final'}>{frameTime ? active ? 'LIVE · UPDATING' : 'LAST FRAME' : active ? 'STARTING' : 'PREVIEW'}</span></div>
     {frameUrl ? <img className="tracking-preview" src={frameUrl} alt="Latest annotated frame showing detected and tracked swimmers"/> : <div className="preview-placeholder"><span className="preview-spinner"/><b>{active ? 'Starting video analysis…' : 'No annotated frame available'}</b><small>{active ? 'The live tracking view will appear as soon as the first frame is processed.' : 'Upload a video to see detections and tracking IDs here.'}</small></div>}
   </div>
+}
+
+function ProtectedVideo({jobId}: {jobId: string}) {
+  const [url, setUrl] = useState('')
+  useEffect(() => {
+    let live = true
+    let objectUrl = ''
+    void authorizedFetch(`/api/jobs/${jobId}/video`).then(async response => {
+      if (!response.ok) return
+      objectUrl = URL.createObjectURL(await response.blob())
+      if (live) setUrl(objectUrl)
+      else URL.revokeObjectURL(objectUrl)
+    }).catch(() => undefined)
+    return () => { live = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [jobId])
+  return url ? <video className="monitor-video" controls src={url}/> : <div className="preview-placeholder"><b>Loading analyzed video…</b></div>
 }
