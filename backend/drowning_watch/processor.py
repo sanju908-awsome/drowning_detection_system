@@ -129,7 +129,7 @@ def process_video(source: Path, destination: Path, settings: Settings,
                                 point = (x1 + int(landmark.x * crop_w), y1 + int(landmark.y * crop_h))
                                 points.append(point)
                                 if landmark.visibility >= 0.45:
-                                    cv2.circle(frame, point, 3, (70, 230, 245), -1)
+                                    cv2.circle(frame, point, 4, (70, 230, 245), -1)
                             for start, end in ((11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
                                                (11, 23), (12, 24), (23, 24), (23, 25), (25, 27),
                                                (24, 26), (26, 28)):
@@ -154,8 +154,15 @@ def process_video(source: Path, destination: Path, settings: Settings,
                         detector_alerted.add(track_id)
                         if on_event:
                             on_event(event)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, label, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                thickness = max(2, round(width / 720))
+                font_scale = max(0.58, min(0.9, width / 1500))
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+                text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+                text_y = max(text_size[1] + 8, y1)
+                cv2.rectangle(frame, (x1, text_y - text_size[1] - 8),
+                              (min(width - 1, x1 + text_size[0] + 10), text_y + 4), color, -1)
+                cv2.putText(frame, label, (x1 + 5, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX,
+                            font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
                 if risk_state["state"] in {"WARNING", "EMERGENCY"}:
                     key = (track_id, risk_state["state"])
                     if key not in events:
@@ -169,8 +176,8 @@ def process_video(source: Path, destination: Path, settings: Settings,
             cv2.putText(frame, f"{stamp} | SAFETY SUPPORT PROTOTYPE | Risk: {'active model' if risk.ready else 'UNASSESSED'}",
                         (10, height - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             writer.write(frame)
-            if preview and frame_index % max(1, int(fps / 3)) == 0:
-                preview_width = min(640, width)
+            if preview and frame_index % max(1, int(fps / 4)) == 0:
+                preview_width = min(960, width)
                 preview_height = max(1, int(height * preview_width / width))
                 preview_frame = cv2.resize(frame, (preview_width, preview_height))
                 encoded_ok, encoded = cv2.imencode(".jpg", preview_frame,

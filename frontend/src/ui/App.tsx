@@ -22,15 +22,19 @@ export default function App() {
   const knownIncidents = useRef<Set<number> | null>(null)
   const audioContext = useRef<AudioContext | null>(null)
 
+  const selectedId = selected?.id ?? null
   const refresh = useCallback(async () => {
     try {
       const [h, j, i] = await Promise.all([api<any>('/api/health'), api<Job[]>('/api/jobs'), api<Incident[]>('/api/incidents')])
       setHealth(h); setJobs(j); setIncidents(i)
       setIncidentsLoaded(true)
-      if (selected) setSelected(await api<Job>(`/api/jobs/${selected.id}`))
+      if (selectedId) {
+        const updated = await api<Job>(`/api/jobs/${selectedId}`)
+        setSelected(current => current?.id === selectedId ? { ...current, ...updated } : current)
+      }
       setError('')
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to connect to the monitoring service.') }
-  }, [selected])
+  }, [selectedId])
 
   useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 2500); return () => window.clearInterval(timer) }, [refresh])
   useEffect(() => {
@@ -76,37 +80,45 @@ export default function App() {
 
   return <main className="shell">
     <header className="top"><div className="brand"><span className="mark">◉</span><div><strong>POOLWATCH</strong><small>VIDEO SAFETY RESEARCH PROTOTYPE</small></div></div><div className="connection"><i className={health?.status === 'ok' ? 'dot online' : 'dot'} />{health?.status === 'ok' ? 'SERVICE CONNECTED' : 'SERVICE OFFLINE'}</div></header>
-    <section className="hero"><div><p className="eyebrow">MONITORING CONSOLE / LOCAL ANALYSIS</p><h1>Every second<br/><em>matters.</em></h1><p className="lead">Analyze pool footage with object detection and persistent person tracking.</p><label className={`upload ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={upload}/><span>{busy ? 'UPLOADING…' : '＋  ANALYZE A VIDEO'}</span></label><span className="meta">MP4, MOV, AVI, MKV, WEBM · max 500 MB</span></div><div className="status-card"><div className="card-head"><span>SYSTEM STATUS</span><span className="pulse"/></div><div className="risk"><span className="risk-icon">!</span><div><strong>RISK UNASSESSED</strong><small>{health?.risk_model_available ? 'Temporal classifier is configured' : 'No validated temporal model is installed'}</small></div></div><div className="status-line"><span>Person tracker</span><b>DeepSORT</b></div><div className="status-line"><span>Live CCTV</span><b className="muted">NOT CONFIGURED</b></div><div className="status-line"><span>Pose estimation</span><b className="muted">{health?.pose_enabled ? 'ENABLED' : health?.pose_requested ? 'MODEL MISSING' : 'DISABLED'}</b></div><p className="note">Detection labels are not a validated drowning-risk score. Maintain continuous human supervision.</p></div></section>
+    {!selected && <section className="hero"><div><p className="eyebrow">MONITORING CONSOLE / LOCAL ANALYSIS</p><h1>Every second<br/><em>matters.</em></h1><p className="lead">Analyze pool footage with object detection and persistent person tracking.</p><label className={`upload ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={upload}/><span>{busy ? 'UPLOADING…' : '＋  ANALYZE A VIDEO'}</span></label><span className="meta">MP4, MOV, AVI, MKV, WEBM · max 500 MB</span></div><div className="status-card"><div className="card-head"><span>SYSTEM STATUS</span><span className="pulse"/></div><div className="risk"><span className="risk-icon">!</span><div><strong>RISK UNASSESSED</strong><small>{health?.risk_model_available ? 'Temporal classifier is configured' : 'No validated temporal model is installed'}</small></div></div><div className="status-line"><span>Person tracker</span><b>DeepSORT</b></div><div className="status-line"><span>Live CCTV</span><b className="muted">NOT CONFIGURED</b></div><div className="status-line"><span>Pose estimation</span><b className="muted">{health?.pose_enabled ? 'ENABLED' : health?.pose_requested ? 'MODEL MISSING' : 'DISABLED'}</b></div><p className="note">Detection labels are not a validated drowning-risk score. Maintain continuous human supervision.</p></div></section>}
     {error && <div className="error" role="alert">{error}<button onClick={() => void refresh()}>Retry</button></div>}
-    <section className="grid"><div className="panel"><div className="panel-title"><div><p className="eyebrow">ANALYSIS</p><h2>{selected ? 'Selected video' : 'Recent jobs'}</h2></div><button className="text-button" onClick={() => setSelected(null)}>VIEW ALL</button></div>
-      {selected ? <JobDetails job={selected} /> : jobs.length === 0 ? <div className="empty"><span>▧</span><strong>No videos analyzed</strong><p>Upload a pool video to create your first analysis job.</p></div> : <div className="job-list">{jobs.map(job => <button className="job" key={job.id} onClick={() => void api<Job>(`/api/jobs/${job.id}`).then(setSelected).catch(e => setError(e.message))}><span className="file-icon">▶</span><span className="job-name"><b>{job.filename}</b><small>{new Date(job.created_at).toLocaleString()}</small></span><span className={`badge ${job.status}`}>{job.status.toUpperCase()}</span><span className="arrow">›</span></button>)}</div>}
-    </div><div className="panel incidents"><div className="panel-title"><div><p className="eyebrow">EVENT LOG</p><h2>Flagged incidents</h2></div><div className="event-tools"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} title={soundEnabled ? 'Alert tones are armed' : 'Click to arm browser alert tones'} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><span className="count">{incidents.length}</span></div></div>{incidents.length === 0 ? <div className="empty compact"><span>◷</span><strong>No detection warnings yet</strong><p>Drowning-class detections raise a warning. Temporal risk stays unassessed until a validated risk model is installed.</p></div> : <div className="incident-list">{incidents.map(i => <div className="incident" key={i.id}><span className={i.state === 'EMERGENCY' ? 'incident-icon emergency' : 'incident-icon'}>!</span><div><b>{i.class_name || i.state} · {i.state} · Track {i.track_id}</b><small>Job {i.job_id.slice(0, 8)} · {i.timestamp_seconds.toFixed(1)} sec</small></div><time>{new Date(i.created_at).toLocaleDateString()}</time></div>)}</div>}</div></section>
+    {selected ? <Monitor job={selected} incidents={incidents.filter(i => i.job_id === selected.id)} health={health} busy={busy} onUpload={upload} onViewAll={() => setSelected(null)} soundEnabled={soundEnabled} onToggleSound={toggleSound}/> : <section className="grid"><div className="panel"><div className="panel-title"><div><p className="eyebrow">ANALYSIS</p><h2>Recent jobs</h2></div></div>
+      {jobs.length === 0 ? <div className="empty"><span>▧</span><strong>No videos analyzed</strong><p>Upload a pool video to create your first analysis job.</p></div> : <div className="job-list">{jobs.map(job => <button className="job" key={job.id} onClick={() => void api<Job>(`/api/jobs/${job.id}`).then(setSelected).catch(e => setError(e.message))}><span className="file-icon">▶</span><span className="job-name"><b>{job.filename}</b><small>{new Date(job.created_at).toLocaleString()}</small></span><span className={`badge ${job.status}`}>{job.status.toUpperCase()}</span><span className="arrow">›</span></button>)}</div>}
+    </div><div className="panel incidents"><div className="panel-title"><div><p className="eyebrow">EVENT LOG</p><h2>Flagged incidents</h2></div><div className="event-tools"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} title={soundEnabled ? 'Alert tones are armed' : 'Click to arm browser alert tones'} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><span className="count">{incidents.length}</span></div></div>{incidents.length === 0 ? <div className="empty compact"><span>◷</span><strong>No detection warnings yet</strong><p>Drowning-class detections raise a warning. Temporal risk stays unassessed until a validated risk model is installed.</p></div> : <div className="incident-list">{incidents.slice(0, 8).map(i => <div className="incident" key={i.id}><span className={i.state === 'EMERGENCY' ? 'incident-icon emergency' : 'incident-icon'}>!</span><div><b>{i.class_name || i.state} · {i.state} · Track {i.track_id}</b><small>Job {i.job_id.slice(0, 8)} · {i.timestamp_seconds.toFixed(1)} sec</small></div><time>{new Date(i.created_at).toLocaleDateString()}</time></div>)}</div>}</div></section>}
     <footer><span>POOLWATCH <i/> RESEARCH BUILD 0.1</span><p>Safety-support prototype. Never replaces lifeguards, emergency response, or continuous supervision.</p></footer>
   </main>
 }
 
-function JobDetails({ job }: { job: Job }) {
+function Monitor({ job, incidents, health, busy, onUpload, onViewAll, soundEnabled, onToggleSound }: {
+  job: Job; incidents: Incident[]; health: any; busy: boolean;
+  onUpload: (event: ChangeEvent<HTMLInputElement>) => void; onViewAll: () => void;
+  soundEnabled: boolean; onToggleSound: () => void;
+}) {
   const processing = job.status === 'processing'
   const queued = job.status === 'queued'
-  return <div className="detail">{processing || queued ? <>
-    <div className="progress-label"><span>{queued ? 'Waiting for the video worker' : 'Analyzing and tracking people'}</span><b>{Math.round(job.progress || 0)}%</b></div>
-    <div className="progress"><i style={{ width: `${job.progress || 0}%` }}/></div>
-    <p className="subtle">The live view refreshes as frames are analyzed. Full videos can take several minutes on CPU.</p>
-    <LivePreview jobId={job.id} active={processing}/>
-  </> : job.status === 'failed' ? <div className="failure"><b>Analysis could not finish</b><p>{job.error}</p><p className="subtle">Check that trained YOLO weights are installed and configured.</p></div> : <>
-    <video className="result-video" controls src={`${API}/api/jobs/${job.id}/video`}/>
-    <LivePreview jobId={job.id} active={false}/>
-    <div className="metrics"><div><small>FRAMES</small><b>{job.summary?.frames_processed ?? '—'}</b></div><div><small>TRACKS</small><b>{job.summary?.tracks_seen ?? '—'}</b></div><div><small>RISK MODEL</small><b>{job.summary?.risk_assessed ? 'ACTIVE' : 'NONE'}</b></div><div><small>POSE</small><b>{job.summary?.pose_available ? `${job.summary.pose_detections ?? 0} POSES` : 'OFF'}</b></div></div>
-    <p className="subtle">{job.summary?.risk_reason || 'Risk states require a validated temporal classifier.'}</p>
-  </>}</div>
+  const complete = job.status === 'completed'
+  return <section className="monitor">
+    <div className="monitor-title"><div><p className="eyebrow">VIDEO MONITOR / TRACKING VIEW</p><h1>{processing ? 'Live analysis' : queued ? 'Analysis queued' : complete ? 'Analysis result' : 'Analysis failed'}</h1><p className="lead monitor-filename">{job.filename}</p></div><div className="monitor-actions"><label className={`upload upload-small ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={onUpload}/><span>{busy ? 'UPLOADING…' : '＋ NEW VIDEO'}</span></label><button className="text-button" onClick={onViewAll}>ALL VIDEOS</button></div></div>
+    {(processing || queued) && <div className="monitor-progress"><div className="progress-label"><span>{queued ? 'Waiting for the video worker to start' : 'Analyzing frames · live tracking updates as each frame is processed'}</span><b>{Math.round(job.progress || 0)}%</b></div><div className="progress"><i style={{ width: `${job.progress || 0}%` }}/></div></div>}
+    <div className="monitor-layout"><div className="monitor-main">
+      {processing || queued ? <LivePreview jobId={job.id} active={processing}/> : complete ? <video className="monitor-video" controls src={`${API}/api/jobs/${job.id}/video`}/> : <div className="failure"><b>Analysis could not finish</b><p>{job.error}</p><p className="subtle">Check that trained YOLO weights are installed and configured.</p></div>}
+      <div className="metrics monitor-metrics"><div><small>{complete ? 'FRAMES' : 'PROGRESS'}</small><b>{complete ? job.summary?.frames_processed ?? '—' : `${Math.round(job.progress || 0)}%`}</b></div><div><small>{complete ? 'TRACKS SEEN' : 'TRACKING'}</small><b>{complete ? job.summary?.tracks_seen ?? '—' : job.summary?.tracks_seen ?? 'ACTIVE'}</b></div><div><small>WARNINGS</small><b>{incidents.length}</b></div><div><small>POSE</small><b>{complete ? job.summary?.pose_available ? `${job.summary.pose_detections ?? 0}` : 'OFF' : health?.pose_enabled ? 'ON' : 'OFF'}</b></div></div>
+      {complete && <p className="subtle">{job.summary?.risk_reason || 'Risk states require a validated temporal classifier.'}</p>}
+    </div><aside className="monitor-side"><div className="panel monitor-status"><div className="panel-title"><div><p className="eyebrow">SYSTEM STATUS</p><h2>Analysis limits</h2></div></div><div className="status-line"><span>Temporal risk model</span><b className="muted">{health?.risk_model_available ? 'INSTALLED' : 'NOT INSTALLED'}</b></div><div className="status-line"><span>Pose estimation</span><b>{health?.pose_enabled ? 'ENABLED' : 'DISABLED'}</b></div><div className="status-line"><span>Live CCTV</span><b className="muted">NOT CONFIGURED</b></div><p className="note">Detector warnings are not validated risk scores. Keep a human supervisor watching the pool.</p></div>
+      <div className="panel monitor-events"><div className="panel-title"><div><p className="eyebrow">THIS VIDEO</p><h2>Warnings</h2></div><div className="event-tools"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} title={soundEnabled ? 'Alert tones are armed' : 'Click to arm browser alert tones'} onClick={onToggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><span className="count">{incidents.length}</span></div></div>{incidents.length === 0 ? <div className="empty compact"><strong>{processing ? 'Watching for detector warnings' : 'No warnings recorded'}</strong><p>Drowning-class detections will appear here. Risk remains unassessed.</p></div> : <div className="incident-list">{incidents.slice(0, 12).map(i => <div className="incident" key={i.id}><span className={i.state === 'EMERGENCY' ? 'incident-icon emergency' : 'incident-icon'}>!</span><div><b>{i.class_name || i.state} · {i.state}</b><small>Track {i.track_id} · {i.timestamp_seconds.toFixed(1)} sec</small></div></div>)}</div>}</div></aside></div>
+  </section>
 }
 
 function LivePreview({ jobId, active }: { jobId: string; active: boolean }) {
   const [frameUrl, setFrameUrl] = useState('')
+  const [frameTime, setFrameTime] = useState<number | null>(null)
   useEffect(() => {
     let mounted = true
     let currentUrl = ''
+    let inFlight = false
     const fetchFrame = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const response = await fetch(`${API}/api/jobs/${jobId}/preview`, { cache: 'no-store' })
         if (!response.ok) return
@@ -115,17 +127,19 @@ function LivePreview({ jobId, active }: { jobId: string; active: boolean }) {
         if (currentUrl) URL.revokeObjectURL(currentUrl)
         currentUrl = nextUrl
         setFrameUrl(nextUrl)
-      } catch { /* A preview is not available until the first frame is processed. */ }
+        setFrameTime(Date.now())
+      } catch { /* The first analyzed frame may not be ready yet. */ }
+      finally { inFlight = false }
     }
     void fetchFrame()
-    const timer = active ? window.setInterval(() => void fetchFrame(), 900) : undefined
+    const timer = active ? window.setInterval(() => void fetchFrame(), 400) : undefined
     return () => {
       mounted = false
       if (timer) window.clearInterval(timer)
       if (currentUrl) URL.revokeObjectURL(currentUrl)
     }
   }, [jobId, active])
-  return <div className="preview-wrap"><div className="preview-heading"><span className="eyebrow">TRACKING PREVIEW</span><span className={active ? 'preview-live' : 'preview-live final'}>{active ? 'LIVE' : 'LAST FRAME'}</span></div>
-    {frameUrl ? <img className="tracking-preview" src={frameUrl} alt="Latest annotated frame showing tracked swimmers and pose landmarks"/> : <div className="preview-placeholder">Waiting for the first annotated frame…</div>}
+  return <div className="preview-wrap"><div className="preview-heading"><span><b>TRACKING VIEW</b><small>Annotated frames · boxes show detected people · IDs follow tracks</small></span><span className={active ? 'preview-live' : 'preview-live final'}>{frameTime ? active ? 'LIVE · UPDATING' : 'LAST FRAME' : active ? 'STARTING' : 'PREVIEW'}</span></div>
+    {frameUrl ? <img className="tracking-preview" src={frameUrl} alt="Latest annotated frame showing detected and tracked swimmers"/> : <div className="preview-placeholder"><span className="preview-spinner"/><b>{active ? 'Starting video analysis…' : 'No annotated frame available'}</b><small>{active ? 'The live tracking view will appear as soon as the first frame is processed.' : 'Upload a video to see detections and tracking IDs here.'}</small></div>}
   </div>
 }
