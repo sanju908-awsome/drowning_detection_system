@@ -12,7 +12,14 @@ function apiUrl(path: string) {
 async function authorizedFetch(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers)
   if (currentUser) headers.set('Authorization', `Bearer ${await currentUser.getIdToken()}`)
-  return fetch(apiUrl(path), {...init, headers})
+  let response = await fetch(apiUrl(path), {...init, headers})
+  // Firebase ID tokens expire. Refresh once on 401 so background polling and
+  // video-ticket requests recover without forcing the user back to sign-in.
+  if (response.status === 401 && currentUser) {
+    headers.set('Authorization', `Bearer ${await currentUser.getIdToken(true)}`)
+    response = await fetch(apiUrl(path), {...init, headers})
+  }
+  return response
 }
 type Job = { id: string; filename: string; status: string; progress: number; created_at: string; error?: string; summary?: { frames_processed: number; tracks_seen: number; risk_assessed: boolean; risk_reason?: string; pose_available?: boolean; pose_detections?: number }; video_url?: string | null }
 type Incident = { id: number; job_id: string; track_id: number; state: string; score: number | null; timestamp_seconds: number; created_at: string; class_name?: string | null }
@@ -568,16 +575,18 @@ function LivePreview({ jobId, active }: { jobId: string; active: boolean }) {
 
 function ProtectedVideo({jobId}: {jobId: string}) {
   const [url, setUrl] = useState('')
+  const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let live = true
-    let objectUrl = ''
-    void authorizedFetch(`/api/jobs/${jobId}/video`).then(async response => {
-      if (!response.ok) return
-      objectUrl = URL.createObjectURL(await response.blob())
-      if (live) setUrl(objectUrl)
-      else URL.revokeObjectURL(objectUrl)
-    }).catch(() => undefined)
-    return () => { live = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [jobId])
-  return url ? <video className="monitor-video" controls src={url}/> : <div className="preview-placeholder"><b>Loading analyzed video…</b></div>
+    setUrl('')
+    setError('')
+    void api<{url: string}>(`/api/jobs/${jobId}/video-ticket`, {method: 'POST'}).then(result => {
+      if (live) setUrl(apiUrl(result.url))
+    }).catch(reason => {
+      if (live) setError(reason instanceof Error ? reason.message : 'Could not open the analyzed video.')
+    })
+    return () => { live = false }
+  }, [jobId, attempt])
+  return url && !error ? <video className="monitor-video" controls preload="metadata" src={url} onError={() => setError('The processed video could not be streamed. Check that the backend is online, then retry.')}/> : <div className="preview-placeholder"><b>{error ? 'Analyzed video unavailable' : 'Preparing analyzed video…'}</b>{error && <><small>{error}</small><button className="camera-connect" onClick={() => setAttempt(value => value + 1)}>RETRY VIDEO</button></>}</div>
 }

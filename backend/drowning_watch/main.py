@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import mimetypes
+import secrets
 import uuid
 import threading
 import time
@@ -36,6 +37,8 @@ cctv_incidents: list[dict] = []
 webcam_lock = threading.Lock()
 webcam_session: dict | None = None
 webcam_incidents: list[dict] = []
+video_ticket_lock = threading.Lock()
+video_tickets: dict[str, tuple[str, float]] = {}
 
 
 def record_webcam_incident(event: dict):
@@ -68,6 +71,23 @@ async def lifespan(_app):
 async def require_firebase_user(request: Request):
     if request.url.path == "/api/health":
         return
+    # Native <video> playback cannot attach a Firebase Authorization header.
+    # Accept a short-lived, single-job capability minted by the authenticated
+    # ticket endpoint so browsers can stream and seek without downloading a
+    # large result into memory first.
+    if request.method == "GET" and request.url.path.startswith("/api/jobs/") and request.url.path.endswith("/video"):
+        job_id = request.url.path.removeprefix("/api/jobs/").removesuffix("/video").strip("/")
+        ticket = request.query_params.get("ticket", "")
+        if ticket:
+            now = time.time()
+            with video_ticket_lock:
+                expired = [key for key, (_, expires) in video_tickets.items() if expires <= now]
+                for key in expired:
+                    video_tickets.pop(key, None)
+                ticket_job = video_tickets.get(ticket, ("", 0))[0]
+            if ticket_job == job_id:
+                return
+            raise HTTPException(401, "This video link expired. Reopen the analysis to get a new link.")
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -350,7 +370,22 @@ def video(job_id: str):
     is_webm = path.suffix.lower() == ".webm"
     suffix = ".webm" if is_webm else ".mp4"
     media_type = "video/webm" if is_webm else "video/mp4"
-    return FileResponse(path, media_type=media_type, filename=f"{job_id}-processed{suffix}")
+    return FileResponse(path, media_type=media_type, filename=f"{job_id}-processed{suffix}",
+                        content_disposition_type="inline")
+
+
+@app.post("/api/jobs/{job_id}/video-ticket")
+def create_video_ticket(job_id: str):
+    result = store.get_job(job_id)
+    if not result or result["status"] != "completed" or not result.get("output_path"):
+        raise HTTPException(404, "Processed video is not available.")
+    path = Path(result["output_path"]).resolve()
+    if not path.is_relative_to(settings.output_dir.resolve()) or not path.is_file():
+        raise HTTPException(404, "Processed video is not available.")
+    ticket = secrets.token_urlsafe(32)
+    with video_ticket_lock:
+        video_tickets[ticket] = (job_id, time.time() + 3600)
+    return {"url": f"/api/jobs/{job_id}/video?ticket={ticket}"}
 
 
 @app.get("/api/jobs/{job_id}/preview")
