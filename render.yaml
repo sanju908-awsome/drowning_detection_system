@@ -29,7 +29,5 @@ services:
         value: "50"
       - key: FRONTEND_ORIGINS
         sync: false
-      - key: FIREBASE_PROJECT_ID
-        sync: false
-      - key: FIREBASE_ALLOWED_EMAILS
+      - key: API_ACCESS_CODE
         sync: false

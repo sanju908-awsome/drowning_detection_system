@@ -32,8 +32,7 @@ class Settings(BaseSettings):
     drowning_alert_window_frames: int = 5
     cctv_rtsp_url: str = ""
     frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    firebase_project_id: str = ""
-    firebase_allowed_emails: str = ""
+    api_access_code: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

@@ -1,6 +1,5 @@
 import base64
 import json
-import logging
 import mimetypes
 import secrets
 import uuid
@@ -23,7 +22,6 @@ from .settings import get_settings
 from .store import Store
 
 settings = get_settings()
-logger = logging.getLogger(__name__)
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.output_dir.mkdir(parents=True, exist_ok=True)
 store = Store(settings.database_url)
@@ -68,13 +66,12 @@ async def lifespan(_app):
             stream.stop()
 
 
-async def require_firebase_user(request: Request):
-    if request.url.path == "/api/health":
+async def require_access_code(request: Request):
+    if request.url.path in {"/api/health", "/api/auth/verify"}:
         return
-    # Native <video> playback cannot attach a Firebase Authorization header.
-    # Accept a short-lived, single-job capability minted by the authenticated
-    # ticket endpoint so browsers can stream and seek without downloading a
-    # large result into memory first.
+    # Native <video> playback cannot attach the Authorization header. Accept a
+    # short-lived, single-job capability minted by the authenticated ticket
+    # endpoint so browsers can stream and seek without loading the full video.
     if request.method == "GET" and request.url.path.startswith("/api/jobs/") and request.url.path.endswith("/video"):
         job_id = request.url.path.removeprefix("/api/jobs/").removesuffix("/video").strip("/")
         ticket = request.query_params.get("ticket", "")
@@ -88,47 +85,23 @@ async def require_firebase_user(request: Request):
             if ticket_job == job_id:
                 return
             raise HTTPException(401, "This video link expired. Reopen the analysis to get a new link.")
+    expected = settings.api_access_code.strip()
+    if not expected:
+        raise HTTPException(503, "Monitoring access is not configured. Set API_ACCESS_CODE on the backend.")
     authorization = request.headers.get("authorization", "")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(401, "Sign in with your Firebase account to access monitoring.")
-    if not settings.firebase_project_id.strip():
-        raise HTTPException(503, "Firebase authentication is not configured. Set FIREBASE_PROJECT_ID on the backend.")
-    try:
-        from google.auth.transport.requests import Request as GoogleAuthRequest
-        from google.oauth2.id_token import verify_firebase_token
-
-        # Firebase Admin's Python verifier requires Application Default Credentials,
-        # which Render does not provide by default. Firebase ID tokens can be securely
-        # checked against Google's published signing certificates and the project ID.
-        decoded_token = verify_firebase_token(
-            token,
-            GoogleAuthRequest(),
-            audience=settings.firebase_project_id,
-            # Windows clock skew of only a few seconds can otherwise reject
-            # freshly issued Firebase tokens as "used too early".
-            clock_skew_in_seconds=30,
-        )
-    except Exception as exc:
-        logger.warning("Firebase ID token verification failed for project %s (%s): %s",
-                       settings.firebase_project_id, type(exc).__name__, str(exc))
-        raise HTTPException(401, "Firebase sign-in expired or is invalid. Sign in again.") from exc
-    allowed_emails = {email.strip().lower() for email in settings.firebase_allowed_emails.split(",") if email.strip()}
-    user_email = str(decoded_token.get("email", "")).strip().lower()
-    request.state.firebase_email = user_email
-    request.state.firebase_allowed = bool(allowed_emails and user_email in allowed_emails)
-    if not request.state.firebase_allowed and request.url.path != "/api/auth/status":
-        raise HTTPException(403, "This Firebase account is not authorized for monitoring.")
+    scheme, _, candidate = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(candidate, expected):
+        raise HTTPException(401, "Enter the monitoring access code.")
 
 
 app = FastAPI(title="Drowning Watch Research Prototype", version="0.1.0", lifespan=lifespan,
               description="Safety-support research prototype. Never use as a substitute for a lifeguard.",
-              dependencies=[Depends(require_firebase_user)])
+              dependencies=[Depends(require_access_code)])
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                    # Vercel assigns unique hosts to branch and deployment previews.
                    # Allow only this project's preview hostname family so testing
                    # deployments can reach the PC backend without opening CORS to
-                   # arbitrary websites. Firebase remains the API auth boundary.
+                   # arbitrary websites. The backend access code remains required.
                    allow_origin_regex=r"^https://drowning-detection-system-(?:mauve|[\w-]+-sanjays-projects-6ac087f0)\.vercel\.app$",
                    allow_credentials=False,
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"])
@@ -184,9 +157,18 @@ def health():
             "cctv_enabled": cctv_status()["status"] == "connected", "warning": "This prototype is not a substitute for trained lifeguards or emergency procedures."}
 
 
-@app.get("/api/auth/status")
-def auth_status(request: Request):
-    return {"authorized": bool(getattr(request.state, "firebase_allowed", False))}
+class AccessCodeRequest(BaseModel):
+    access_code: str = Field(min_length=1, max_length=256)
+
+
+@app.post("/api/auth/verify")
+def verify_access_code(request: AccessCodeRequest):
+    expected = settings.api_access_code.strip()
+    if not expected:
+        raise HTTPException(503, "Monitoring access is not configured. Set API_ACCESS_CODE on the backend.")
+    if not secrets.compare_digest(request.access_code, expected):
+        raise HTTPException(401, "The access code is incorrect.")
+    return {"valid": True}
 
 
 class CameraConnection(BaseModel):

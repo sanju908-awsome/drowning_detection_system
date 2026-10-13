@@ -1,23 +1,22 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react'
-import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth'
-import type { User } from 'firebase/auth'
-import { auth, firebaseConfigured } from './firebase'
 
 const API = import.meta.env.VITE_API_URL?.replace(/\/$/, '') || (import.meta.env.DEV ? 'http://localhost:8000' : '')
-let currentUser: User | null = null
+let currentAccessCode = sessionStorage.getItem('poolwatch-access-code') || ''
 function apiUrl(path: string) {
   if (!API) throw new Error('The monitoring backend is not configured. Set VITE_API_URL in the Vercel project settings.')
   return `${API}${path}`
 }
 async function authorizedFetch(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers)
-  if (currentUser) headers.set('Authorization', `Bearer ${await currentUser.getIdToken()}`)
-  let response = await fetch(apiUrl(path), {...init, headers})
-  // Firebase ID tokens expire. Refresh once on 401 so background polling and
-  // video-ticket requests recover without forcing the user back to sign-in.
-  if (response.status === 401 && currentUser) {
-    headers.set('Authorization', `Bearer ${await currentUser.getIdToken(true)}`)
-    response = await fetch(apiUrl(path), {...init, headers})
+  if (currentAccessCode) headers.set('Authorization', `Bearer ${currentAccessCode}`)
+  const response = await fetch(apiUrl(path), {...init, headers})
+  if (response.status === 401 && currentAccessCode) {
+    const detail = (await response.clone().json().catch(() => ({}))).detail
+    if (detail === 'Enter the monitoring access code.') {
+      currentAccessCode = ''
+      sessionStorage.removeItem('poolwatch-access-code')
+      window.dispatchEvent(new Event('poolwatch-auth-expired'))
+    }
   }
   return response
 }
@@ -30,21 +29,21 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json()
 }
 
-function uploadVideo(form: FormData, onProgress: (loaded: number, total: number) => void, refreshToken = false): Promise<Job> {
-  return new Promise(async (resolve, reject) => {
-    let token = ''
-    try { if (currentUser) token = await currentUser.getIdToken(refreshToken) }
-    catch (error) { reject(error); return }
+function uploadVideo(form: FormData, onProgress: (loaded: number, total: number) => void): Promise<Job> {
+  return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest()
     request.open('POST', apiUrl('/api/jobs'))
     request.timeout = 30 * 60 * 1000
-    if (token) request.setRequestHeader('Authorization', `Bearer ${token}`)
+    if (currentAccessCode) request.setRequestHeader('Authorization', `Bearer ${currentAccessCode}`)
     request.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded, event.total) }
     request.onerror = () => reject(new Error('Upload connection failed. Check that the backend PC is online and try again.'))
     request.ontimeout = () => reject(new Error('Upload timed out. Keep the backend PC online and retry with a smaller video.'))
     request.onload = () => {
-      if (request.status === 401 && currentUser && !refreshToken) {
-        uploadVideo(form, onProgress, true).then(resolve, reject)
+      if (request.status === 401 && currentAccessCode) {
+        currentAccessCode = ''
+        sessionStorage.removeItem('poolwatch-access-code')
+        window.dispatchEvent(new Event('poolwatch-auth-expired'))
+        reject(new Error('Your access code was rejected. Enter it again.'))
         return
       }
       let body: any = {}
@@ -59,84 +58,50 @@ function uploadVideo(form: FormData, onProgress: (loaded: number, total: number)
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null)
-  const [authReady, setAuthReady] = useState(false)
-  const [accessReady, setAccessReady] = useState(false)
-  const [authorized, setAuthorized] = useState(false)
-  const [accessError, setAccessError] = useState('')
+  const [accessCode, setAccessCode] = useState(currentAccessCode)
   useEffect(() => {
-    if (!auth) { setAuthReady(true); return }
-    return onAuthStateChanged(auth, signedInUser => { currentUser = signedInUser; setUser(signedInUser); setAuthReady(true) })
+    const clear = () => setAccessCode('')
+    window.addEventListener('poolwatch-auth-expired', clear)
+    return () => window.removeEventListener('poolwatch-auth-expired', clear)
   }, [])
-  useEffect(() => {
-    if (!user) { setAccessReady(false); setAuthorized(false); return }
-    let current = true
-    void api<{authorized: boolean}>('/api/auth/status')
-      .then(result => { if (current) { setAuthorized(result.authorized); setAccessError(''); setAccessReady(true) } })
-      .catch(reason => { if (current) { setAuthorized(false); setAccessError(reason instanceof Error ? reason.message : 'Could not verify access with the backend.'); setAccessReady(true) } })
-    return () => { current = false }
-  }, [user])
-  if (!firebaseConfigured) return <AuthSetupMessage />
-  if (!authReady) return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}>Loading secure sign-in…</main>
-  if (!user) return <AccessGate />
-  if (!accessReady) return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}>Checking access approval…</main>
-  if (accessError) return <AccessCheckError email={user.email || ''} message={accessError} onRetry={async () => {
-    setAccessReady(false); setAccessError('')
-    try {
-      await user.getIdToken(true)
-      const result = await api<{authorized: boolean}>('/api/auth/status')
-      setAuthorized(result.authorized)
-    } catch (reason) {
-      setAccessError(reason instanceof Error ? reason.message : 'Could not verify access with the backend.')
-    } finally { setAccessReady(true) }
-  }} onLogout={() => { if (auth) void signOut(auth) }} />
-  if (!authorized) return <AccessPending email={user.email || ''} onLogout={() => { if (auth) void signOut(auth) }} />
-  return <MonitoringApp onLogout={() => { if (auth) void signOut(auth) }} />
+  const login = (code: string) => {
+    currentAccessCode = code
+    sessionStorage.setItem('poolwatch-access-code', code)
+    setAccessCode(code)
+  }
+  const logout = () => {
+    currentAccessCode = ''
+    sessionStorage.removeItem('poolwatch-access-code')
+    setAccessCode('')
+  }
+  return accessCode ? <MonitoringApp onLogout={logout} /> : <AccessGate onAuthenticated={login} />
 }
 
-function AuthSetupMessage() {
-  return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}><section className="panel" style={{width: 'min(100%, 460px)', padding: '2rem'}}><p className="eyebrow">POOLWATCH · SIGN-IN SETUP</p><h1 style={{fontSize: '2rem'}}>Firebase is not configured</h1><p className="subtle">Set VITE_FIREBASE_API_KEY, VITE_FIREBASE_AUTH_DOMAIN, VITE_FIREBASE_PROJECT_ID, and VITE_FIREBASE_APP_ID in the Vercel project settings, then redeploy.</p></section></main>
-}
-
-function AccessGate() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [createAccount, setCreateAccount] = useState(false)
+function AccessGate({onAuthenticated}: {onAuthenticated: (code: string) => void}) {
+  const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('')
     try {
-      if (!auth) throw new Error('Firebase is not configured for this site.')
-      if (createAccount) await createUserWithEmailAndPassword(auth, email, password)
-      else await signInWithEmailAndPassword(auth, email, password)
+      const response = await fetch(apiUrl('/api/auth/verify'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({access_code: code})})
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || 'Could not verify the access code.')
+      onAuthenticated(code)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not connect to the monitoring service.')
     } finally { setBusy(false) }
   }
   return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}>
     <section className="panel" style={{width: 'min(100%, 460px)', padding: '2rem'}}>
-      <p className="eyebrow">POOLWATCH · PRIVATE MONITORING</p><h1 style={{fontSize: '2rem', margin: '0 0 .5rem'}}>Sign in</h1>
-      <p className="subtle">Sign in with your account. New accounts must be approved by the system owner before monitoring access is granted.</p>
+      <p className="eyebrow">POOLWATCH · PRIVATE MONITORING</p><h1 style={{fontSize: '2rem', margin: '0 0 .5rem'}}>Enter access code</h1>
+      <p className="subtle">Use the private monitoring code provided by the system owner.</p>
       <form onSubmit={unlock} style={{display: 'grid', gap: '1rem', marginTop: '1.5rem'}}>
-        <label>EMAIL<input autoComplete="username" type="email" required value={email} onChange={event => setEmail(event.target.value)} aria-label="Account email" style={{display: 'block', width: '100%', marginTop: '.5rem'}} /></label>
-        <label>PASSWORD<input autoComplete="current-password" type="password" required value={password} onChange={event => setPassword(event.target.value)} aria-label="Account password" style={{display: 'block', width: '100%', marginTop: '.5rem'}} /></label>
+        <label>ACCESS CODE<input autoComplete="current-password" type="password" required value={code} onChange={event => setCode(event.target.value)} aria-label="Monitoring access code" style={{display: 'block', width: '100%', marginTop: '.5rem'}} /></label>
         {error && <p className="error" role="alert">{error}</p>}
-        <button className="camera-connect" disabled={busy || !email || !password}>{busy ? (createAccount ? 'CREATING ACCOUNT…' : 'SIGNING IN…') : createAccount ? 'CREATE ACCOUNT' : 'SIGN IN'}</button>
+        <button className="camera-connect" disabled={busy || !code}>{busy ? 'CHECKING…' : 'UNLOCK MONITOR'}</button>
       </form>
-      <button className="text-button" style={{marginTop: '1rem'}} onClick={() => {setCreateAccount(!createAccount); setError('')}}>{createAccount ? 'Already have an account? Sign in' : 'Need an account? Create one'}</button>
     </section>
   </main>
-}
-
-function AccessPending({email, onLogout}: {email: string; onLogout: () => void}) {
-  const subject = encodeURIComponent('PoolWatch monitoring access request')
-  const body = encodeURIComponent(`Please review monitoring access for this Firebase account: ${email}`)
-  return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}><section className="panel" style={{width: 'min(100%, 460px)', padding: '2rem'}}><p className="eyebrow">POOLWATCH · ACCESS REVIEW</p><h1 style={{fontSize: '2rem'}}>Approval required</h1><p className="subtle">Your account ({email}) is signed in, but it cannot access monitoring until the system owner approves it.</p><p><a href={`mailto:sanjukarra15@gmail.com?subject=${subject}&body=${body}`}>Email the system owner to request access</a></p><p className="subtle">After approval, the owner must add your email to the backend allowlist.</p><button className="text-button" onClick={onLogout}>SIGN OUT</button></section></main>
-}
-
-function AccessCheckError({email, message, onRetry, onLogout}: {email: string; message: string; onRetry: () => void; onLogout: () => void}) {
-  return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}><section className="panel" style={{width: 'min(100%, 460px)', padding: '2rem'}}><p className="eyebrow">POOLWATCH · CONNECTION CHECK</p><h1 style={{fontSize: '2rem'}}>Could not verify access</h1><p className="subtle">Signed in as {email}, but the backend rejected the sign-in token.</p><p className="error" role="alert">{message}</p><p className="subtle">Try refreshing the token. If this continues, share this error with the system owner.</p><button className="camera-connect" onClick={onRetry}>RETRY ACCESS CHECK</button><button className="text-button" onClick={onLogout}>SIGN OUT</button></section></main>
 }
 
 function MonitoringApp({onLogout}: {onLogout: () => void}) {
@@ -151,6 +116,8 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [screen, setScreen] = useState<'analysis' | 'cctv' | 'webcam'>('analysis')
   const knownIncidents = useRef<Set<number> | null>(null)
+  const refreshPending = useRef(false)
+  const incidentPollPending = useRef(false)
   const alertedIncidentIds = useRef<Set<number>>(new Set())
   const alertableJobs = useRef<Set<string>>(new Set())
   const buzzerPlaying = useRef(false)
@@ -158,6 +125,8 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
 
   const selectedId = selected?.id ?? null
   const refresh = useCallback(async () => {
+    if (refreshPending.current) return
+    refreshPending.current = true
     try {
       const [h, j, i] = await Promise.all([api<any>('/api/health'), api<Job[]>('/api/jobs'), api<Incident[]>('/api/incidents')])
       setHealth(h); setJobs(j); setIncidents(i)
@@ -168,15 +137,34 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
       }
       setError('')
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to connect to the monitoring service.') }
+    finally { refreshPending.current = false }
   }, [selectedId])
 
-  useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 2500); return () => window.clearInterval(timer) }, [refresh])
+  useEffect(() => {
+    let active = true
+    let timer = 0
+    const poll = async () => {
+      await refresh()
+      if (active) timer = window.setTimeout(() => void poll(), 5000)
+    }
+    void poll()
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [refresh])
   useEffect(() => {
     if (!soundEnabled) return
-    const timer = window.setInterval(() => {
-      void api<Incident[]>('/api/incidents').then(setIncidents).catch(() => undefined)
-    }, 350)
-    return () => window.clearInterval(timer)
+    let active = true
+    let timer = 0
+    const poll = async () => {
+      if (!incidentPollPending.current) {
+        incidentPollPending.current = true
+        try { setIncidents(await api<Incident[]>('/api/incidents')) }
+        catch { /* The connection banner reports backend availability. */ }
+        finally { incidentPollPending.current = false }
+      }
+      if (active) timer = window.setTimeout(() => void poll(), 1000)
+    }
+    void poll()
+    return () => { active = false; window.clearTimeout(timer) }
   }, [soundEnabled])
   useEffect(() => {
     if (!incidentsLoaded) return
