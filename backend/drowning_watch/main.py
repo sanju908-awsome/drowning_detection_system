@@ -124,7 +124,13 @@ async def require_firebase_user(request: Request):
 app = FastAPI(title="Drowning Watch Research Prototype", version="0.1.0", lifespan=lifespan,
               description="Safety-support research prototype. Never use as a substitute for a lifeguard.",
               dependencies=[Depends(require_firebase_user)])
-app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
+                   # Vercel assigns unique hosts to branch and deployment previews.
+                   # Allow only this project's preview hostname family so testing
+                   # deployments can reach the PC backend without opening CORS to
+                   # arbitrary websites. Firebase remains the API auth boundary.
+                   allow_origin_regex=r"^https://drowning-detection-system-(?:mauve|[\w-]+-sanjays-projects-6ac087f0)\.vercel\.app$",
+                   allow_credentials=False,
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"])
 
 
