@@ -1,6 +1,5 @@
 import base64
 import json
-import hmac
 import mimetypes
 import uuid
 import threading
@@ -22,8 +21,6 @@ from .settings import get_settings
 from .store import Store
 
 settings = get_settings()
-if settings.app_env.lower() == "production" and not settings.api_access_code.strip():
-    raise RuntimeError("API_ACCESS_CODE must be configured before production mode can start.")
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.output_dir.mkdir(parents=True, exist_ok=True)
 store = Store(settings.database_url)
@@ -66,20 +63,36 @@ async def lifespan(_app):
             stream.stop()
 
 
-async def require_access_code(request: Request):
-    if request.url.path in {"/api/health", "/api/auth/verify"}:
+async def require_firebase_user(request: Request):
+    if request.url.path == "/api/health":
         return
-    expected = settings.api_access_code
-    if expected:
-        authorization = request.headers.get("authorization", "")
-        scheme, _, candidate = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(candidate, expected):
-            raise HTTPException(401, "Enter the monitoring access code.")
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(401, "Sign in with your Firebase account to access monitoring.")
+    if not settings.firebase_project_id.strip():
+        raise HTTPException(503, "Firebase authentication is not configured. Set FIREBASE_PROJECT_ID on the backend.")
+    try:
+        import firebase_admin
+        from firebase_admin import auth
+        try:
+            firebase_app = firebase_admin.get_app()
+        except ValueError:
+            firebase_app = firebase_admin.initialize_app(options={"projectId": settings.firebase_project_id})
+        decoded_token = auth.verify_id_token(token, app=firebase_app, check_revoked=False)
+    except Exception as exc:
+        raise HTTPException(401, "Firebase sign-in expired or is invalid. Sign in again.") from exc
+    allowed_emails = {email.strip().lower() for email in settings.firebase_allowed_emails.split(",") if email.strip()}
+    user_email = str(decoded_token.get("email", "")).strip().lower()
+    request.state.firebase_email = user_email
+    request.state.firebase_allowed = bool(allowed_emails and user_email in allowed_emails)
+    if not request.state.firebase_allowed and request.url.path != "/api/auth/status":
+        raise HTTPException(403, "This Firebase account is not authorized for monitoring.")
 
 
 app = FastAPI(title="Drowning Watch Research Prototype", version="0.1.0", lifespan=lifespan,
               description="Safety-support research prototype. Never use as a substitute for a lifeguard.",
-              dependencies=[Depends(require_access_code)])
+              dependencies=[Depends(require_firebase_user)])
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"])
 
@@ -133,16 +146,9 @@ def health():
             "cctv_enabled": cctv_status()["status"] == "connected", "warning": "This prototype is not a substitute for trained lifeguards or emergency procedures."}
 
 
-class AccessCodeRequest(BaseModel):
-    access_code: str = Field(min_length=1, max_length=256)
-
-
-@app.post("/api/auth/verify")
-def verify_access_code(request: AccessCodeRequest):
-    expected = settings.api_access_code
-    if expected and not hmac.compare_digest(request.access_code, expected):
-        raise HTTPException(401, "The access code is incorrect.")
-    return {"valid": True}
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    return {"authorized": bool(getattr(request.state, "firebase_allowed", False))}
 
 
 class CameraConnection(BaseModel):

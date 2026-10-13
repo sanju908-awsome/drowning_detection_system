@@ -2,30 +2,34 @@ services:
   - type: web
     name: drowning-watch-api
     runtime: python
-    plan: standard
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn drowning_watch.main:app --app-dir backend --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    disk:
-      name: drowning-watch-data
-      mountPath: /var/data
-      sizeGB: 10
     envVars:
       - key: APP_ENV
         value: production
       - key: DATA_DIR
-        value: /var/data
+        value: /tmp/drowning-watch-data
       - key: UPLOAD_DIR
-        value: /var/data/uploads
+        value: /tmp/drowning-watch-data/uploads
       - key: OUTPUT_DIR
-        value: /var/data/outputs
+        value: /tmp/drowning-watch-data/outputs
       - key: DATABASE_URL
-        value: sqlite:////var/data/drowning_watch.db
+        value: sqlite:////tmp/drowning-watch-data/drowning_watch.db
       - key: YOLO_MODEL
-        value: /var/data/best.pt
+        value: backend/drowning_watch/assets/best.pt
       - key: POSE_MODEL
-        value: /var/data/pose_landmarker.task
+        value: /tmp/drowning-watch-data/pose_landmarker.task
       - key: RISK_MODEL
-        value: /var/data/risk_model.joblib
+        value: /tmp/drowning-watch-data/risk_model.joblib
+      - key: POSE_ENABLED
+        value: "false"
+      - key: MAX_UPLOAD_MB
+        value: "50"
       - key: FRONTEND_ORIGINS
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_ALLOWED_EMAILS
         sync: false
