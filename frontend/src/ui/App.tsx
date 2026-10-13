@@ -12,11 +12,7 @@ function apiUrl(path: string) {
 async function authorizedFetch(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers)
   if (currentUser) headers.set('Authorization', `Bearer ${await currentUser.getIdToken()}`)
-  const response = await fetch(apiUrl(path), {...init, headers})
-  if (response.status === 401) {
-    if (auth) void signOut(auth)
-  }
-  return response
+  return fetch(apiUrl(path), {...init, headers})
 }
 type Job = { id: string; filename: string; status: string; progress: number; created_at: string; error?: string; summary?: { frames_processed: number; tracks_seen: number; risk_assessed: boolean; risk_reason?: string; pose_available?: boolean; pose_detections?: number }; video_url?: string | null }
 type Incident = { id: number; job_id: string; track_id: number; state: string; score: number | null; timestamp_seconds: number; created_at: string; class_name?: string | null }
@@ -32,6 +28,7 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false)
   const [accessReady, setAccessReady] = useState(false)
   const [authorized, setAuthorized] = useState(false)
+  const [accessError, setAccessError] = useState('')
   useEffect(() => {
     if (!auth) { setAuthReady(true); return }
     return onAuthStateChanged(auth, signedInUser => { currentUser = signedInUser; setUser(signedInUser); setAuthReady(true) })
@@ -40,14 +37,24 @@ export default function App() {
     if (!user) { setAccessReady(false); setAuthorized(false); return }
     let current = true
     void api<{authorized: boolean}>('/api/auth/status')
-      .then(result => { if (current) { setAuthorized(result.authorized); setAccessReady(true) } })
-      .catch(() => { if (current) { setAuthorized(false); setAccessReady(true) } })
+      .then(result => { if (current) { setAuthorized(result.authorized); setAccessError(''); setAccessReady(true) } })
+      .catch(reason => { if (current) { setAuthorized(false); setAccessError(reason instanceof Error ? reason.message : 'Could not verify access with the backend.'); setAccessReady(true) } })
     return () => { current = false }
   }, [user])
   if (!firebaseConfigured) return <AuthSetupMessage />
   if (!authReady) return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}>Loading secure sign-in…</main>
   if (!user) return <AccessGate />
   if (!accessReady) return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}>Checking access approval…</main>
+  if (accessError) return <AccessCheckError email={user.email || ''} message={accessError} onRetry={async () => {
+    setAccessReady(false); setAccessError('')
+    try {
+      await user.getIdToken(true)
+      const result = await api<{authorized: boolean}>('/api/auth/status')
+      setAuthorized(result.authorized)
+    } catch (reason) {
+      setAccessError(reason instanceof Error ? reason.message : 'Could not verify access with the backend.')
+    } finally { setAccessReady(true) }
+  }} onLogout={() => { if (auth) void signOut(auth) }} />
   if (!authorized) return <AccessPending email={user.email || ''} onLogout={() => { if (auth) void signOut(auth) }} />
   return <MonitoringApp onLogout={() => { if (auth) void signOut(auth) }} />
 }
@@ -91,6 +98,10 @@ function AccessPending({email, onLogout}: {email: string; onLogout: () => void})
   const subject = encodeURIComponent('PoolWatch monitoring access request')
   const body = encodeURIComponent(`Please review monitoring access for this Firebase account: ${email}`)
   return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}><section className="panel" style={{width: 'min(100%, 460px)', padding: '2rem'}}><p className="eyebrow">POOLWATCH · ACCESS REVIEW</p><h1 style={{fontSize: '2rem'}}>Approval required</h1><p className="subtle">Your account ({email}) is signed in, but it cannot access monitoring until the system owner approves it.</p><p><a href={`mailto:sanjukarra15@gmail.com?subject=${subject}&body=${body}`}>Email the system owner to request access</a></p><p className="subtle">After approval, the owner must add your email to the backend allowlist.</p><button className="text-button" onClick={onLogout}>SIGN OUT</button></section></main>
+}
+
+function AccessCheckError({email, message, onRetry, onLogout}: {email: string; message: string; onRetry: () => void; onLogout: () => void}) {
+  return <main className="shell" style={{minHeight: '100vh', display: 'grid', placeItems: 'center'}}><section className="panel" style={{width: 'min(100%, 460px)', padding: '2rem'}}><p className="eyebrow">POOLWATCH · CONNECTION CHECK</p><h1 style={{fontSize: '2rem'}}>Could not verify access</h1><p className="subtle">Signed in as {email}, but the backend rejected the sign-in token.</p><p className="error" role="alert">{message}</p><p className="subtle">Try refreshing the token. If this continues, share this error with the system owner.</p><button className="camera-connect" onClick={onRetry}>RETRY ACCESS CHECK</button><button className="text-button" onClick={onLogout}>SIGN OUT</button></section></main>
 }
 
 function MonitoringApp({onLogout}: {onLogout: () => void}) {

@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import mimetypes
 import uuid
 import threading
@@ -21,6 +22,7 @@ from .settings import get_settings
 from .store import Store
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.output_dir.mkdir(parents=True, exist_ok=True)
 store = Store(settings.database_url)
@@ -81,6 +83,8 @@ async def require_firebase_user(request: Request):
             firebase_app = firebase_admin.initialize_app(options={"projectId": settings.firebase_project_id})
         decoded_token = auth.verify_id_token(token, app=firebase_app, check_revoked=False)
     except Exception as exc:
+        logger.warning("Firebase ID token verification failed for project %s (%s)",
+                       settings.firebase_project_id, type(exc).__name__)
         raise HTTPException(401, "Firebase sign-in expired or is invalid. Sign in again.") from exc
     allowed_emails = {email.strip().lower() for email in settings.firebase_allowed_emails.split(",") if email.strip()}
     user_email = str(decoded_token.get("email", "")).strip().lower()
