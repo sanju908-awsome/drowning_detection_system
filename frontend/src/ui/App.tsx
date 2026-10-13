@@ -148,7 +148,9 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
     const newDrowning = incidents.filter(item => item.class_name?.trim().toLowerCase() === 'drowning detector'
       && !alertedIncidentIds.current.has(item.id)
       && (knownIncidents.current === null ? alertableJobs.current.has(item.job_id) : !knownIncidents.current.has(item.id) || alertableJobs.current.has(item.job_id)))
-    if (soundEnabled && newDrowning.length && audioContext.current?.state === 'running') {
+    // Do not suppress or mark a new warning as handled just because the browser
+    // suspended its AudioContext. playBuzzer() resumes the context before playing.
+    if (soundEnabled && newDrowning.length) {
       newDrowning.forEach(item => alertedIncidentIds.current.add(item.id))
       playAlert()
     }
