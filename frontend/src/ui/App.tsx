@@ -30,6 +30,34 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json()
 }
 
+function uploadVideo(form: FormData, onProgress: (loaded: number, total: number) => void, refreshToken = false): Promise<Job> {
+  return new Promise(async (resolve, reject) => {
+    let token = ''
+    try { if (currentUser) token = await currentUser.getIdToken(refreshToken) }
+    catch (error) { reject(error); return }
+    const request = new XMLHttpRequest()
+    request.open('POST', apiUrl('/api/jobs'))
+    request.timeout = 30 * 60 * 1000
+    if (token) request.setRequestHeader('Authorization', `Bearer ${token}`)
+    request.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded, event.total) }
+    request.onerror = () => reject(new Error('Upload connection failed. Check that the backend PC is online and try again.'))
+    request.ontimeout = () => reject(new Error('Upload timed out. Keep the backend PC online and retry with a smaller video.'))
+    request.onload = () => {
+      if (request.status === 401 && currentUser && !refreshToken) {
+        uploadVideo(form, onProgress, true).then(resolve, reject)
+        return
+      }
+      let body: any = {}
+      try { body = JSON.parse(request.responseText) } catch { /* keep fallback message */ }
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(body.detail || `Upload failed (${request.status}).`)); return
+      }
+      resolve(body as Job)
+    }
+    request.send(form)
+  })
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
   const [authReady, setAuthReady] = useState(false)
@@ -117,6 +145,7 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [selected, setSelected] = useState<Job | null>(null)
   const [busy, setBusy] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{percent: number; mbps: number} | null>(null)
   const [error, setError] = useState('')
   const [incidentsLoaded, setIncidentsLoaded] = useState(false)
   const [soundEnabled, setSoundEnabled] = useState(true)
@@ -237,20 +266,26 @@ function MonitoringApp({onLogout}: {onLogout: () => void}) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
-    setBusy(true); setError('')
+    setBusy(true); setUploadProgress({percent: 0, mbps: 0}); setError('')
     const form = new FormData(); form.append('file', file)
     try {
-      const job = await api<Job>('/api/jobs', { method: 'POST', body: form })
+      const startedAt = performance.now()
+      const job = await uploadVideo(form, (loaded, total) => {
+        const seconds = Math.max((performance.now() - startedAt) / 1000, 0.1)
+        setUploadProgress({percent: Math.min(99, Math.round(loaded / total * 100)), mbps: loaded / seconds / 1024 / 1024})
+      })
+      setUploadProgress({percent: 100, mbps: 0})
       alertableJobs.current.add(job.id)
       setSelected(job); await refresh()
     } catch (e) { setError(e instanceof Error ? e.message : 'Upload failed.') }
-    finally { setBusy(false) }
+    finally { setBusy(false); setUploadProgress(null) }
   }
 
   return <main className="shell" onPointerDownCapture={unlockSound} onKeyDownCapture={unlockSound}>
     <header className="top"><div className="brand"><span className="mark">◉</span><div><strong>POOLWATCH</strong><small>VIDEO SAFETY RESEARCH PROTOTYPE</small></div></div><nav className="screen-nav" aria-label="Application screens"><button className={screen === 'analysis' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('analysis')}>VIDEO ANALYSIS</button><button className={screen === 'cctv' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('cctv')}>CCTV LIVE</button><button className={screen === 'webcam' ? 'screen-tab active' : 'screen-tab'} onClick={() => setScreen('webcam')}>PC WEBCAM</button></nav><div className="header-alert"><button className={`sound-toggle ${soundEnabled ? 'active' : 'sound-off'}`} aria-pressed={soundEnabled} onClick={toggleSound}>ALARM {soundEnabled ? 'ON' : 'OFF · ARM'}</button><button className="sound-test" onClick={() => void playBuzzer()}>TEST SOUND</button><button className="text-button" onClick={onLogout}>LOCK</button></div><div className="connection"><i className={health?.status === 'ok' ? 'dot online' : 'dot'} />{health?.status === 'ok' ? 'SERVICE CONNECTED' : 'SERVICE OFFLINE'}</div></header>
     {screen === 'cctv' ? <CctvPanel /> : screen === 'webcam' ? <WebcamPanel onAlert={() => { if (soundEnabled) playAlert() }} /> : <>
-    {!selected && <section className="hero"><div><p className="eyebrow">MONITORING CONSOLE / LOCAL ANALYSIS</p><h1>Every second<br/><em>matters.</em></h1><p className="lead">Analyze pool footage with object detection and persistent person tracking.</p><label className={`upload ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={upload}/><span>{busy ? 'UPLOADING…' : '＋  ANALYZE A VIDEO'}</span></label><span className="meta">MP4, MOV, AVI, MKV, WEBM · max 500 MB</span></div><div className="status-card"><div className="card-head"><span>SYSTEM STATUS</span><span className="pulse"/></div><div className="risk"><span className="risk-icon">!</span><div><strong>RISK UNASSESSED</strong><small>{health?.risk_model_available ? 'Experimental SAFE/EMERGENCY temporal model installed' : 'No temporal model is installed'}</small></div></div><div className="status-line"><span>Person tracker</span><b>DeepSORT</b></div><div className="status-line"><span>Live CCTV</span><b className={health?.cctv_enabled ? '' : 'muted'}>{health?.cctv_enabled ? 'CONNECTED' : 'NOT CONNECTED'}</b></div><div className="status-line"><span>Pose estimation</span><b className="muted">{health?.pose_enabled ? 'ENABLED' : health?.pose_requested ? 'MODEL MISSING' : 'DISABLED'}</b></div><p className="note">Experimental motion alerts are not safety-validated and do not replace human supervision.</p></div></section>}
+    {uploadProgress && <section className="upload-progress" role="status"><div className="progress-label"><span>Sending video to your PC</span><b>{uploadProgress.percent}%</b></div><div className="progress"><i style={{width: `${uploadProgress.percent}%`}}/></div><small>{uploadProgress.mbps.toFixed(2)} MB/s · analysis starts after upload completes</small></section>}
+    {!selected && <section className="hero"><div><p className="eyebrow">MONITORING CONSOLE / LOCAL ANALYSIS</p><h1>Every second<br/><em>matters.</em></h1><p className="lead">Analyze pool footage with object detection and persistent person tracking.</p><label className={`upload ${busy ? 'disabled' : ''}`}><input type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" disabled={busy} onChange={upload}/><span>{busy ? `UPLOADING ${uploadProgress?.percent ?? 0}%…` : '＋  ANALYZE A VIDEO'}</span></label><span className="meta">MP4, MOV, AVI, MKV, WEBM · max {health?.max_upload_mb ?? 500} MB</span></div><div className="status-card"><div className="card-head"><span>SYSTEM STATUS</span><span className="pulse"/></div><div className="risk"><span className="risk-icon">!</span><div><strong>RISK UNASSESSED</strong><small>{health?.risk_model_available ? 'Experimental SAFE/EMERGENCY temporal model installed' : 'No temporal model is installed'}</small></div></div><div className="status-line"><span>Person tracker</span><b>DeepSORT</b></div><div className="status-line"><span>Live CCTV</span><b className={health?.cctv_enabled ? '' : 'muted'}>{health?.cctv_enabled ? 'CONNECTED' : 'NOT CONNECTED'}</b></div><div className="status-line"><span>Pose estimation</span><b className="muted">{health?.pose_enabled ? 'ENABLED' : health?.pose_requested ? 'MODEL MISSING' : 'DISABLED'}</b></div><p className="note">Experimental motion alerts are not safety-validated and do not replace human supervision.</p></div></section>}
     {error && <div className="error" role="alert">{error}<button onClick={() => void refresh()}>Retry</button></div>}
     {selected ? <Monitor job={selected} incidents={incidents.filter(i => i.job_id === selected.id)} health={health} busy={busy} onUpload={upload} onViewAll={() => setSelected(null)} soundEnabled={soundEnabled} onToggleSound={toggleSound} onTestBuzzer={() => void playBuzzer()}/> : <section className="grid"><div className="panel"><div className="panel-title"><div><p className="eyebrow">ANALYSIS</p><h2>Videos & results</h2></div></div>
       {jobs.length === 0 ? <div className="empty"><span>▧</span><strong>No videos analyzed</strong><p>Upload a pool video to create your first analysis job.</p></div> : <div className="job-list">{jobs.map(job => <button className="job" key={job.id} aria-label={`${job.status === 'completed' ? 'View result for' : 'Open'} ${job.filename}`} onClick={() => void api<Job>(`/api/jobs/${job.id}`).then(opened => { if (opened.status === 'processing' || opened.status === 'queued') alertableJobs.current.add(opened.id); setSelected(opened) }).catch(e => setError(e.message))}><span className="file-icon">▶</span><span className="job-name"><b>{job.filename}</b><small>{new Date(job.created_at).toLocaleString()}</small></span><span className={`badge ${job.status}`}>{job.status === 'completed' ? 'VIEW RESULT' : job.status.toUpperCase()}</span><span className="arrow">›</span></button>)}</div>}

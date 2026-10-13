@@ -13,6 +13,7 @@
 .monitor-filename{margin:8px 0 0;max-width:760px;overflow-wrap:anywhere}
 .monitor-actions{display:flex;align-items:center;gap:18px;flex-shrink:0}
 .upload-small{padding:12px 15px;font-size:10px}
+.upload-progress{max-width:540px;margin-top:16px;padding:14px 16px;background:#0b222e;border:1px solid #1a3a46}.upload-progress .progress-label{margin-bottom:8px}.upload-progress small{display:block;color:#78969b;font:10px 'DM Mono';margin-top:8px}
 .monitor-progress{margin:0 0 18px;padding:14px 16px;background:#0b222e;border:1px solid #1a3a46}
 .monitor-progress .progress-label{font-size:13px}
 .monitor-layout{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(300px,.82fr);align-items:start;gap:20px}

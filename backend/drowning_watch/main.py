@@ -177,6 +177,7 @@ def validate_video_upload(filename: str, content_type: str) -> tuple[str, str]:
 @app.get("/api/health")
 def health():
     return {"status": "ok", "mode": "research-prototype", "detector_weights_available": settings.yolo_model.is_file(),
+            "max_upload_mb": settings.max_upload_mb,
             "risk_model_available": settings.risk_model.is_file(),
             "pose_enabled": settings.pose_enabled and settings.pose_model.is_file(),
             "pose_requested": settings.pose_enabled, "pose_model_available": settings.pose_model.is_file(),
