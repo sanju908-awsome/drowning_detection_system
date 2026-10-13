@@ -85,10 +85,13 @@ async def require_firebase_user(request: Request):
             token,
             GoogleAuthRequest(),
             audience=settings.firebase_project_id,
+            # Windows clock skew of only a few seconds can otherwise reject
+            # freshly issued Firebase tokens as "used too early".
+            clock_skew_in_seconds=30,
         )
     except Exception as exc:
-        logger.warning("Firebase ID token verification failed for project %s (%s)",
-                       settings.firebase_project_id, type(exc).__name__)
+        logger.warning("Firebase ID token verification failed for project %s (%s): %s",
+                       settings.firebase_project_id, type(exc).__name__, str(exc))
         raise HTTPException(401, "Firebase sign-in expired or is invalid. Sign in again.") from exc
     allowed_emails = {email.strip().lower() for email in settings.firebase_allowed_emails.split(",") if email.strip()}
     user_email = str(decoded_token.get("email", "")).strip().lower()
