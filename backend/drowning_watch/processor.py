@@ -11,6 +11,9 @@ from .risk_logic import RiskStateLogic
 from .settings import Settings
 
 MAX_TRACK_HISTORY_GAP_SECONDS = 1.0
+# Render's free instance is CPU-limited. Running YOLO on every source frame can
+# leave uploads appearing stuck at 0%; sample a smaller, steady set of frames.
+MAX_ANALYSIS_FPS = 5.0
 
 
 def process_video(source: Path, destination: Path, settings: Settings,
@@ -50,11 +53,13 @@ def process_video(source: Path, destination: Path, settings: Settings,
         raise ValueError("OpenCV could not open the uploaded video.")
     fps = capture.get(cv2.CAP_PROP_FPS)
     fps = fps if fps and fps > 0 else 25.0
+    frame_stride = max(1, round(fps / MAX_ANALYSIS_FPS))
+    analysis_fps = fps / frame_stride
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     destination.parent.mkdir(parents=True, exist_ok=True)
     # VP8/WebM is supported by Chromium without platform H.264 encoder libraries.
-    writer = cv2.VideoWriter(str(destination), cv2.VideoWriter_fourcc(*"VP80"), fps, (width, height))
+    writer = cv2.VideoWriter(str(destination), cv2.VideoWriter_fourcc(*"VP80"), analysis_fps, (width, height))
     if not writer.isOpened():
         capture.release()
         raise RuntimeError("Could not create processed video. Check codec support and output permissions.")
@@ -71,12 +76,16 @@ def process_video(source: Path, destination: Path, settings: Settings,
     detector_alerted: set[int] = set()
     pose_detections = 0
     frame_index = 0
+    source_frame_index = 0
     people_seen: set[int] = set()
     try:
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
+            if source_frame_index % frame_stride:
+                source_frame_index += 1
+                continue
             result = detector.predict(frame, conf=settings.yolo_confidence, imgsz=settings.yolo_image_size, verbose=False)[0]
             raw = []
             if result.boxes is not None:
@@ -86,7 +95,7 @@ def process_video(source: Path, destination: Path, settings: Settings,
                     class_id = int(box.cls[0])
                     raw.append(([xyxy[0], xyxy[1], xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]], confidence, class_id))
             tracks = tracker.update_tracks(raw, frame=frame)
-            now = frame_index / fps
+            now = source_frame_index / fps
             for track in tracks:
                 if not track.is_confirmed() or track.time_since_update > 0:
                     continue
@@ -180,7 +189,7 @@ def process_video(source: Path, destination: Path, settings: Settings,
             cv2.putText(frame, f"{stamp} | SAFETY SUPPORT PROTOTYPE | Risk: {'active model' if risk.ready else 'UNASSESSED'}",
                         (10, height - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             writer.write(frame)
-            if preview and frame_index % max(1, int(fps / 4)) == 0:
+            if preview and frame_index % max(1, int(analysis_fps / 4)) == 0:
                 preview_width = min(960, width)
                 preview_height = max(1, int(height * preview_width / width))
                 preview_frame = cv2.resize(frame, (preview_width, preview_height))
@@ -189,8 +198,9 @@ def process_video(source: Path, destination: Path, settings: Settings,
                 if encoded_ok:
                     preview(encoded.tobytes())
             frame_index += 1
+            source_frame_index += 1
             if progress and frame_count:
-                progress(min(99.0, frame_index * 100.0 / frame_count))
+                progress(min(99.0, source_frame_index * 100.0 / frame_count))
     finally:
         capture.release()
         writer.release()
@@ -198,7 +208,8 @@ def process_video(source: Path, destination: Path, settings: Settings,
             pose.close()
     if progress:
         progress(100.0)
-    return {"frames_processed": frame_index, "fps": fps, "tracks_seen": len(people_seen),
+    return {"frames_processed": frame_index, "source_fps": fps, "analysis_fps": analysis_fps,
+            "tracks_seen": len(people_seen),
             "risk_assessed": risk.ready, "events": list(events.values()),
             "risk_reason": risk.reason or None, "pose_available": pose is not None,
             "pose_detections": pose_detections,
