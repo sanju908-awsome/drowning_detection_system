@@ -75,13 +75,17 @@ async def require_firebase_user(request: Request):
     if not settings.firebase_project_id.strip():
         raise HTTPException(503, "Firebase authentication is not configured. Set FIREBASE_PROJECT_ID on the backend.")
     try:
-        import firebase_admin
-        from firebase_admin import auth
-        try:
-            firebase_app = firebase_admin.get_app()
-        except ValueError:
-            firebase_app = firebase_admin.initialize_app(options={"projectId": settings.firebase_project_id})
-        decoded_token = auth.verify_id_token(token, app=firebase_app, check_revoked=False)
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2.id_token import verify_firebase_token
+
+        # Firebase Admin's Python verifier requires Application Default Credentials,
+        # which Render does not provide by default. Firebase ID tokens can be securely
+        # checked against Google's published signing certificates and the project ID.
+        decoded_token = verify_firebase_token(
+            token,
+            GoogleAuthRequest(),
+            audience=settings.firebase_project_id,
+        )
     except Exception as exc:
         logger.warning("Firebase ID token verification failed for project %s (%s)",
                        settings.firebase_project_id, type(exc).__name__)
